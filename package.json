@@ -6,15 +6,28 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "seed": "node --env-file=.env.local scripts/seed.mjs",
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down",
+    "db:reset": "docker compose down -v",
+    "db:logs": "docker compose logs -f mongo",
+    "setup": "npm run db:up && npm run seed",
+    "start:all": "npm run db:up && npm run seed && npm run dev"
   },
   "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "mongoose": "^9.9.1",
     "next": "16.3.0",
+    "next-auth": "^5.0.0-beta.32",
+    "next-themes": "^0.4.6",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/bcryptjs": "^2.4.6",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

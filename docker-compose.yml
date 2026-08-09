@@ -1,0 +1,30 @@
+# Local MongoDB for development.
+# Single-node replica set so Mongoose multi-document transactions work
+# (needed later for the unit-reassignment flow). The healthcheck initiates
+# the replica set automatically on first start.
+services:
+  mongo:
+    image: mongo:7
+    container_name: tenant-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    volumes:
+      - tenant-mongo-data:/data/db
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mongosh",
+          "--quiet",
+          "--eval",
+          "try { rs.status().ok } catch (e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'localhost:27017' }] }) }",
+        ]
+      interval: 5s
+      timeout: 30s
+      start_period: 5s
+      retries: 30
+
+volumes:
+  tenant-mongo-data:
