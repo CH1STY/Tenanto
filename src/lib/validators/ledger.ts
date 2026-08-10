@@ -47,6 +47,20 @@ export const withdrawalSchema = z.object({
   note: z.string().trim().max(200).optional(),
 });
 
+export const withdrawalReturnSchema = z.object({
+  buildingId: objectIdSchema,
+  monthYear,
+  id: objectIdSchema,
+  amount: positiveMoney,
+});
+
+export const expensePaySchema = z.object({
+  buildingId: objectIdSchema,
+  monthYear,
+  id: objectIdSchema,
+  amount: positiveMoney,
+});
+
 export const addChargeSchema = z.object({
   buildingId: objectIdSchema,
   monthYear,
@@ -79,6 +93,12 @@ export const monthNoteSchema = z.object({
   buildingId: objectIdSchema,
   monthYear,
   note: z.string().trim().max(1000).optional(),
+});
+
+export const openingBalanceAdjustSchema = z.object({
+  buildingId: objectIdSchema,
+  monthYear,
+  openingBalance: money,
 });
 
 /** Identifies a single ledger entry (income, expense, withdrawal, payment). */

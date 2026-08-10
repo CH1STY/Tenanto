@@ -20,3 +20,11 @@ export const managerBuildingsSchema = z.object({
   userId: objectIdSchema,
   buildingIds: z.array(objectIdSchema).default([]),
 });
+
+export const managerPasswordSchema = z.object({
+  userId: objectIdSchema,
+  password: z
+    .string()
+    .min(8, "Password must be at least 8 characters.")
+    .max(200),
+});

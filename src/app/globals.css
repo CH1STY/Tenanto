@@ -51,8 +51,17 @@ body {
     background: #ffffff;
     color: #000000;
   }
+  /* Compact the sheet so a month fits one A4 page, overflowing to a second
+     only when it truly must. */
+  .print-only {
+    font-size: 10px;
+    line-height: 1.25;
+  }
+  .print-only table {
+    border-collapse: collapse;
+  }
   @page {
-    size: landscape;
-    margin: 1.2cm;
+    size: A4 landscape;
+    margin: 0.8cm;
   }
 }

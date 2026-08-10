@@ -21,6 +21,8 @@ import {
 import { resolveTransactionDate, monthLabel } from "@/lib/dates";
 import { MonthlyPeriod } from "@/models/MonthlyPeriod";
 import { Tenancy } from "@/models/Tenancy";
+import { Unit } from "@/models/Unit";
+import { User } from "@/models/User";
 import { Charge } from "@/models/Charge";
 import { Payment } from "@/models/Payment";
 import { Income } from "@/models/Income";
@@ -32,11 +34,14 @@ import {
   incomeSchema,
   expenseSchema,
   withdrawalSchema,
+  withdrawalReturnSchema,
+  expensePaySchema,
   addChargeSchema,
   editChargeSchema,
   chargeRefSchema,
   closeMonthSchema,
   monthNoteSchema,
+  openingBalanceAdjustSchema,
   ledgerEntrySchema,
 } from "@/lib/validators/ledger";
 
@@ -132,20 +137,45 @@ export async function openMonth(
       ? prev.closingBalance
       : (openingBalance ?? 0);
 
+  // Snapshot the active tenants at open time so this month's roster is frozen
+  // permanently, independent of any later tenancy assignment or date edits.
+  const activeTenancies = await Tenancy.find({
+    buildingId,
+    isActive: true,
+  }).lean();
+
+  const [rosterUnits, rosterUsers] = await Promise.all([
+    Unit.find({ _id: { $in: activeTenancies.map((t) => t.unitId) } })
+      .select("label")
+      .lean(),
+    User.find({ _id: { $in: activeTenancies.map((t) => t.userId) } })
+      .select("name")
+      .lean(),
+  ]);
+  const rosterUnitLabel = new Map(
+    rosterUnits.map((u) => [String(u._id), u.label]),
+  );
+  const rosterTenantName = new Map(
+    rosterUsers.map((u) => [String(u._id), u.name]),
+  );
+  const roster = activeTenancies.map((t) => ({
+    tenancyId: t._id,
+    userId: t.userId,
+    unitId: t.unitId,
+    unitLabel: rosterUnitLabel.get(String(t.unitId)) ?? "",
+    tenantName: rosterTenantName.get(String(t.userId)) ?? "",
+  }));
+
   const period = await MonthlyPeriod.create({
     buildingId,
     monthYear,
     openingBalance: opening,
     serviceChargeAmount,
     status: PERIOD_STATUS.OPEN,
+    roster,
   });
 
   // Raise a SERVICE_CHARGE for every active tenancy at amount N.
-  const activeTenancies = await Tenancy.find({
-    buildingId,
-    isActive: true,
-  }).lean();
-
   if (activeTenancies.length > 0 && serviceChargeAmount > 0) {
     await Charge.insertMany(
       activeTenancies.map((t) => ({
@@ -210,6 +240,61 @@ export async function updateMonthNote(
     actor: actorInfo(actor),
     description: `Updated note for ${monthYear}.`,
     after: { note: period!.note },
+  });
+
+  revalidatePath(`/admin/buildings/${buildingId}/ledger`);
+  return OK;
+}
+
+export async function adjustOpeningBalance(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const actor = await actorOrNull();
+  if (!actor) return fail("Not authorized.");
+
+  const parsed = openingBalanceAdjustSchema.safeParse({
+    buildingId: formData.get("buildingId"),
+    monthYear: formData.get("monthYear"),
+    openingBalance: formData.get("openingBalance"),
+  });
+  if (!parsed.success)
+    return fail(parsed.error.issues[0]?.message ?? "Invalid input.");
+
+  const { buildingId, monthYear, openingBalance } = parsed.data;
+
+  await connectDB();
+  const { error, period } = await requireOpenPeriod(buildingId, monthYear);
+  if (error) return fail(error);
+
+  const previous = await MonthlyPeriod.findOne({
+    buildingId,
+    monthYear: { $lt: monthYear },
+  })
+    .sort({ monthYear: -1 })
+    .select("monthYear")
+    .lean();
+
+  if (previous) {
+    return fail(
+      `Opening cash can only be adjusted for the first month. Found previous month ${previous.monthYear}.`,
+    );
+  }
+
+  const beforeOpening = period!.openingBalance;
+  period!.openingBalance = openingBalance;
+  await period!.save();
+
+  await logAudit({
+    action: AUDIT_ACTIONS.UPDATE,
+    entity: "MonthlyPeriod",
+    entityId: String(period!._id),
+    entityLabel: monthYear,
+    buildingId,
+    actor: actorInfo(actor),
+    description: `Adjusted opening cash in hand for ${monthYear} to ${openingBalance}.`,
+    before: { openingBalance: beforeOpening },
+    after: { openingBalance },
   });
 
   revalidatePath(`/admin/buildings/${buildingId}/ledger`);
@@ -376,6 +461,8 @@ export async function addExpense(
     return (last?.voucherNo ?? 0) + 1;
   }
 
+  const paidNow = status === EXPENSE_STATUS.PAID ? amount : 0;
+
   let expense;
   try {
     expense = await Expense.create({
@@ -386,7 +473,10 @@ export async function addExpense(
       description,
       amount,
       status,
-      paidAt: txnDate.date,
+      paidAmount: paidNow,
+      payments:
+        paidNow > 0 ? [{ amount: paidNow, monthYear, at: txnDate.date }] : [],
+      paidAt: paidNow > 0 ? txnDate.date : null,
       recordedBy: actor.id,
     });
   } catch (err) {
@@ -534,7 +624,11 @@ export async function addCharge(
   return OK;
 }
 
-/** Adjust a due raised this month (not one forwarded from a previous month). */
+/**
+ * Adjust dues in the open month view.
+ * Managers may adjust only this month's dues; SuperAdmins may also adjust
+ * earlier-month dues that are still outstanding.
+ */
 export async function editCharge(
   _prev: ActionState,
   formData: FormData,
@@ -559,8 +653,9 @@ export async function editCharge(
 
   const charge = await Charge.findOne({ _id: chargeId, buildingId });
   if (!charge) return fail("Due not found.");
-  if (charge.monthYear !== monthYear) {
-    return fail("Only this month's dues can be adjusted here.");
+  const isCurrentMonthCharge = charge.monthYear === monthYear;
+  if (!isCurrentMonthCharge && actor.role !== ROLES.SUPER_ADMIN) {
+    return fail("Only a Super Admin can adjust dues from previous months.");
   }
   if (charge.category === CHARGE_CATEGORY.SERVICE_CHARGE) {
     return fail(
@@ -589,7 +684,7 @@ export async function editCharge(
     entityLabel: description,
     buildingId,
     actor: actorInfo(actor),
-    description: `Adjusted due to "${description}" (${amount}).`,
+    description: `Adjusted ${isCurrentMonthCharge ? "current" : "previous"}-month due to "${description}" (${amount}).`,
     before,
     after: { description, amount },
   });
@@ -598,7 +693,10 @@ export async function editCharge(
   return OK;
 }
 
-/** Delete a due raised this month with no payments against it. */
+/**
+ * Delete a due with no payments against it.
+ * Managers: current-month only. SuperAdmins: current or previous-month dues.
+ */
 export async function removeCharge(formData: FormData) {
   const actor = await actorOrNull();
   if (!actor) return;
@@ -617,8 +715,8 @@ export async function removeCharge(formData: FormData) {
 
   const charge = await Charge.findOne({ _id: chargeId, buildingId });
   if (!charge) return;
-  // Forwarded (older-month) dues or partly-paid dues can't be removed here.
-  if (charge.monthYear !== monthYear) return;
+  const isCurrentMonthCharge = charge.monthYear === monthYear;
+  if (!isCurrentMonthCharge && actor.role !== ROLES.SUPER_ADMIN) return;
   if (charge.paidAmount > 0) return;
 
   const label = charge.description;
@@ -631,7 +729,7 @@ export async function removeCharge(formData: FormData) {
     entityLabel: label,
     buildingId,
     actor: actorInfo(actor),
-    description: `Deleted this month's due "${label}".`,
+    description: `Deleted ${isCurrentMonthCharge ? "current" : "previous"}-month due "${label}".`,
   });
 
   revalidatePath(`/admin/buildings/${buildingId}/ledger`);
@@ -694,12 +792,13 @@ export async function deleteExpense(formData: FormData) {
   if ("error" in ctx) return;
   const { actor, buildingId, monthYear, id } = ctx;
 
-  const expense = await Expense.findOneAndDelete({
-    _id: id,
-    buildingId,
-    monthYear,
-  });
+  const expense = await Expense.findOne({ _id: id, buildingId, monthYear });
   if (!expense) return;
+  // Deleting removes the row and its embedded payments; block it when a payment
+  // was logged in another (possibly closed) month so that month isn't altered.
+  if ((expense.payments ?? []).some((p) => p.monthYear !== monthYear)) return;
+
+  await expense.deleteOne();
 
   await logAudit({
     action: AUDIT_ACTIONS.DELETE,
@@ -720,17 +819,139 @@ export async function deleteExpense(formData: FormData) {
   revalidatePath(`/admin/buildings/${buildingId}/ledger`);
 }
 
+export async function payExpense(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const actor = await actorOrNull();
+  if (!actor) return fail("Not authorized.");
+
+  const parsed = expensePaySchema.safeParse({
+    buildingId: formData.get("buildingId"),
+    monthYear: formData.get("monthYear"),
+    id: formData.get("id"),
+    amount: formData.get("amount"),
+  });
+  if (!parsed.success)
+    return fail(parsed.error.issues[0]?.message ?? "Invalid input.");
+  const { buildingId, monthYear, id, amount } = parsed.data;
+
+  const txnDate = resolveTransactionDate(
+    monthYear,
+    formData.get("date") as string | null,
+  );
+  if (!txnDate.ok) return fail(txnDate.error);
+
+  await connectDB();
+  const { error } = await requireOpenPeriod(buildingId, monthYear);
+  if (error) return fail(error);
+
+  const expense = await Expense.findOne({ _id: id, buildingId });
+  if (!expense) return fail("Expense not found.");
+
+  const paid = expense.paidAmount ?? 0;
+  const outstanding = expense.amount - paid;
+  if (outstanding <= 0) return fail("This expense is already fully paid.");
+  if (amount > outstanding) {
+    return fail(`Amount exceeds the outstanding ${outstanding} to pay.`);
+  }
+
+  expense.paidAmount = paid + amount;
+  expense.payments.push({ amount, monthYear, at: txnDate.date });
+  expense.status =
+    expense.paidAmount >= expense.amount
+      ? EXPENSE_STATUS.PAID
+      : EXPENSE_STATUS.PARTIAL;
+  if (expense.paidAmount >= expense.amount) expense.paidAt = txnDate.date;
+  await expense.save();
+
+  const stillOwed = expense.amount - expense.paidAmount;
+  await logAudit({
+    action: AUDIT_ACTIONS.UPDATE,
+    entity: "Expense",
+    entityId: String(expense._id),
+    entityLabel: `V#${expense.voucherNo} ${expense.description}`,
+    buildingId,
+    actor: actorInfo(actor),
+    description: `Paid ${amount} on expense (V#${expense.voucherNo}) "${expense.description}"${
+      stillOwed > 0 ? ` (${stillOwed} still due)` : " (fully paid)"
+    }.`,
+    after: { paid: amount, paidAmount: expense.paidAmount },
+  });
+
+  revalidatePath(`/admin/buildings/${buildingId}/ledger`);
+  return OK;
+}
+
+export async function returnWithdrawal(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const actor = await actorOrNull();
+  if (!actor) return fail("Not authorized.");
+
+  const parsed = withdrawalReturnSchema.safeParse({
+    buildingId: formData.get("buildingId"),
+    monthYear: formData.get("monthYear"),
+    id: formData.get("id"),
+    amount: formData.get("amount"),
+  });
+  if (!parsed.success)
+    return fail(parsed.error.issues[0]?.message ?? "Invalid input.");
+  const { buildingId, monthYear, id, amount } = parsed.data;
+
+  const txnDate = resolveTransactionDate(
+    monthYear,
+    formData.get("date") as string | null,
+  );
+  if (!txnDate.ok) return fail(txnDate.error);
+
+  await connectDB();
+  const { error } = await requireOpenPeriod(buildingId, monthYear);
+  if (error) return fail(error);
+
+  const wd = await Withdrawal.findOne({ _id: id, buildingId });
+  if (!wd) return fail("Withdrawal not found.");
+
+  const outstanding = wd.amount - (wd.returnedAmount ?? 0);
+  if (amount > outstanding) {
+    return fail(`Amount exceeds the outstanding ${outstanding} to return.`);
+  }
+
+  wd.returnedAmount = (wd.returnedAmount ?? 0) + amount;
+  wd.returns.push({ amount, monthYear, at: txnDate.date });
+  await wd.save();
+
+  const stillOwed = wd.amount - wd.returnedAmount;
+  await logAudit({
+    action: AUDIT_ACTIONS.UPDATE,
+    entity: "Withdrawal",
+    entityId: String(wd._id),
+    entityLabel: wd.takenBy,
+    buildingId,
+    actor: actorInfo(actor),
+    description: `${wd.takenBy} returned ${amount} to the building${
+      stillOwed > 0 ? ` (${stillOwed} still outstanding)` : " (fully repaid)"
+    }.`,
+    after: { returned: amount, returnedAmount: wd.returnedAmount },
+  });
+
+  revalidatePath(`/admin/buildings/${buildingId}/ledger`);
+  return OK;
+}
+
 export async function deleteWithdrawal(formData: FormData) {
   const ctx = await requireDeletable(formData);
   if ("error" in ctx) return;
   const { actor, buildingId, monthYear, id } = ctx;
 
-  const wd = await Withdrawal.findOneAndDelete({
-    _id: id,
-    buildingId,
-    monthYear,
-  });
+  const wd = await Withdrawal.findOne({ _id: id, buildingId, monthYear });
   if (!wd) return;
+  // Deleting removes the row and its embedded returns; block it when a return
+  // was logged in another (possibly closed) month so that month isn't altered.
+  if ((wd.returns ?? []).some((r) => r.monthYear !== monthYear)) return;
+
+  await wd.deleteOne();
 
   await logAudit({
     action: AUDIT_ACTIONS.DELETE,
@@ -741,6 +962,73 @@ export async function deleteWithdrawal(formData: FormData) {
     actor: actorInfo(actor),
     description: `Deleted withdrawal ${wd.amount} by ${wd.takenBy}.`,
     before: { takenBy: wd.takenBy, amount: wd.amount, note: wd.note },
+  });
+
+  revalidatePath(`/admin/buildings/${buildingId}/ledger`);
+}
+
+/** Undo the most recent return on a withdrawal (only one recorded this month). */
+export async function reverseWithdrawalReturn(formData: FormData) {
+  const ctx = await requireDeletable(formData);
+  if ("error" in ctx) return;
+  const { actor, buildingId, monthYear, id } = ctx;
+
+  const wd = await Withdrawal.findOne({ _id: id, buildingId });
+  if (!wd) return;
+  const last = wd.returns[wd.returns.length - 1];
+  // Only undo a return that was recorded in the month being edited.
+  if (!last || last.monthYear !== monthYear) return;
+
+  wd.returns.pop();
+  wd.returnedAmount = Math.max(0, (wd.returnedAmount ?? 0) - last.amount);
+  await wd.save();
+
+  await logAudit({
+    action: AUDIT_ACTIONS.UPDATE,
+    entity: "Withdrawal",
+    entityId: id,
+    entityLabel: wd.takenBy,
+    buildingId,
+    actor: actorInfo(actor),
+    description: `Undid a return of ${last.amount} by ${wd.takenBy}.`,
+    after: { returnedAmount: wd.returnedAmount },
+  });
+
+  revalidatePath(`/admin/buildings/${buildingId}/ledger`);
+}
+
+/** Undo the most recent payment on an expense (only one recorded this month). */
+export async function reverseExpensePayment(formData: FormData) {
+  const ctx = await requireDeletable(formData);
+  if ("error" in ctx) return;
+  const { actor, buildingId, monthYear, id } = ctx;
+
+  const expense = await Expense.findOne({ _id: id, buildingId });
+  if (!expense) return;
+  const last = expense.payments[expense.payments.length - 1];
+  // Only undo a payment that was recorded in the month being edited.
+  if (!last || last.monthYear !== monthYear) return;
+
+  expense.payments.pop();
+  expense.paidAmount = Math.max(0, (expense.paidAmount ?? 0) - last.amount);
+  expense.status =
+    expense.paidAmount <= 0
+      ? EXPENSE_STATUS.DUE
+      : expense.paidAmount >= expense.amount
+        ? EXPENSE_STATUS.PAID
+        : EXPENSE_STATUS.PARTIAL;
+  if (expense.paidAmount < expense.amount) expense.paidAt = null;
+  await expense.save();
+
+  await logAudit({
+    action: AUDIT_ACTIONS.UPDATE,
+    entity: "Expense",
+    entityId: id,
+    entityLabel: `V#${expense.voucherNo} ${expense.description}`,
+    buildingId,
+    actor: actorInfo(actor),
+    description: `Undid a payment of ${last.amount} on expense (V#${expense.voucherNo}) "${expense.description}".`,
+    after: { paidAmount: expense.paidAmount, status: expense.status },
   });
 
   revalidatePath(`/admin/buildings/${buildingId}/ledger`);

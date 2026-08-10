@@ -2,19 +2,30 @@
 
 import { connectDB } from "@/lib/db";
 import { Building } from "@/models/Building";
-import { Tenancy } from "@/models/Tenancy";
-import { Unit } from "@/models/Unit";
-import { User } from "@/models/User";
 import { Charge } from "@/models/Charge";
 import { Income } from "@/models/Income";
 import { Expense } from "@/models/Expense";
 import { Withdrawal } from "@/models/Withdrawal";
 import { Payment } from "@/models/Payment";
 import { MonthlyPeriod } from "@/models/MonthlyPeriod";
-import { getPeriodTotals } from "@/lib/ledger";
+import {
+  getPeriodTotals,
+  resolveMonthRoster,
+  paidByChargeAsOf,
+  chargeStateAsOf,
+  expenseMonthQuery,
+  withdrawalMonthQuery,
+  expensePaidAsOf,
+  withdrawalReturnedAsOf,
+} from "@/lib/ledger";
 import { shortDate } from "@/lib/dates";
 import { compareUnitLabels } from "@/lib/units";
-import { CHARGE_CATEGORY, CHARGE_STATUS } from "@/lib/constants";
+import {
+  CHARGE_CATEGORY,
+  CHARGE_STATUS,
+  EXPENSE_STATUS,
+  PERIOD_STATUS,
+} from "@/lib/constants";
 import { objectIdSchema } from "@/lib/validators/building";
 import type { CashBookData } from "./cashbook";
 
@@ -31,41 +42,65 @@ export async function loadCashBook(
   const period = await MonthlyPeriod.findOne({ buildingId, monthYear }).lean();
   if (!period) return null;
 
-  const tenancies = await Tenancy.find({ buildingId, isActive: true }).lean();
+  // The month's tenant roster: its immutable open-time snapshot when present.
+  // On an open month also include anyone who still owes, even if they've
+  // detached, so their dues remain visible for collection.
+  const roster = await resolveMonthRoster(
+    buildingId,
+    monthYear,
+    period.roster,
+    {
+      includeOutstanding: period.status === PERIOD_STATUS.OPEN,
+    },
+  );
+  const tenancyIds = roster.map((r) => r.tenancyId);
+
   const [
     building,
-    units,
-    users,
-    charges,
+    rawCharges,
     incomes,
     expenses,
     withdrawals,
     payments,
     totals,
     prevPeriod,
+    paidAsOf,
   ] = await Promise.all([
-    Building.findById(buildingId).select("name").lean(),
-    Unit.find({ buildingId }).lean(),
-    User.find({ _id: { $in: tenancies.map((t) => t.userId) } }).lean(),
-    Charge.find({ tenancyId: { $in: tenancies.map((t) => t._id) } })
+    Building.findById(buildingId).select("name address").lean(),
+    // Cap charges to this month or earlier so a later month's dues never leak in.
+    Charge.find({
+      tenancyId: { $in: tenancyIds },
+      monthYear: { $lte: monthYear },
+    })
       .sort({ monthYear: 1 })
       .lean(),
     Income.find({ buildingId, monthYear }).sort({ receivedAt: 1 }).lean(),
-    Expense.find({ buildingId, monthYear }).sort({ voucherNo: 1 }).lean(),
-    Withdrawal.find({ buildingId, monthYear }).sort({ takenAt: 1 }).lean(),
+    // Carried-forward payables still owed as of this month show until settled.
+    Expense.find(expenseMonthQuery(buildingId, monthYear))
+      .sort({ monthYear: 1, voucherNo: 1 })
+      .lean(),
+    // Advances still out as of this month forward until fully returned.
+    Withdrawal.find(withdrawalMonthQuery(buildingId, monthYear))
+      .sort({ monthYear: 1, takenAt: 1 })
+      .lean(),
     Payment.find({ buildingId, monthYear }).lean(),
     getPeriodTotals(buildingId, monthYear),
     MonthlyPeriod.findOne({ buildingId, monthYear: { $lt: monthYear } })
       .sort({ monthYear: -1 })
       .select("monthYear note")
       .lean(),
+    paidByChargeAsOf(buildingId, monthYear),
   ]);
+
+  // Settle each charge only with payments received up to this month, so a due
+  // paid in a later month still reads as outstanding in this month's snapshot.
+  const charges = rawCharges.map((c) => {
+    const state = chargeStateAsOf(c.amount, paidAsOf.get(String(c._id)) ?? 0);
+    return { ...c, paidAmount: state.paidAmount, status: state.status };
+  });
 
   const prevNote = prevPeriod?.note?.trim() ? prevPeriod.note.trim() : null;
   const prevNoteMonth = prevPeriod?.monthYear ?? null;
-
-  const unitLabel = new Map(units.map((u) => [String(u._id), u.label]));
-  const userName = new Map(users.map((u) => [String(u._id), u.name]));
 
   const paidByTenancy = new Map<string, number>();
   for (const p of payments) {
@@ -93,15 +128,14 @@ export async function loadCashBook(
     chargesByTenancy.set(key, list);
   }
 
-  const rows = tenancies
-    .map((t) => ({
-      key: String(t._id),
-      label: `${unitLabel.get(String(t.unitId)) ?? "?"} · ${
-        userName.get(String(t.userId)) ?? "Tenant"
-      }`,
-      paid: paidByTenancy.get(String(t._id)) ?? 0,
-      due: dueByTenancy.get(String(t._id)) ?? 0,
-      charges: (chargesByTenancy.get(String(t._id)) ?? []).map((c) => ({
+  const rows = roster
+    .map((r) => ({
+      key: r.tenancyId,
+      label: `${r.unitLabel} · ${r.tenantName}`,
+      isPastTenant: r.isPastForMonth,
+      paid: paidByTenancy.get(r.tenancyId) ?? 0,
+      due: dueByTenancy.get(r.tenancyId) ?? 0,
+      charges: (chargesByTenancy.get(r.tenancyId) ?? []).map((c) => ({
         id: String(c._id),
         description: c.description,
         monthYear: c.monthYear,
@@ -116,12 +150,14 @@ export async function loadCashBook(
 
   return {
     buildingName: building?.name ?? "",
+    buildingAddress: building?.address ?? null,
     monthYear,
     status: period.status,
     openingBalance: period.openingBalance,
     closingBalance: period.closingBalance ?? null,
     prevNote,
     prevNoteMonth,
+    note: period.note?.trim() ? period.note.trim() : null,
     rows,
     incomes: incomes.map((i) => ({
       id: String(i._id),
@@ -130,20 +166,34 @@ export async function loadCashBook(
       source: i.source,
       amount: i.amount,
     })),
-    expenses: expenses.map((e) => ({
-      id: String(e._id),
-      date: shortDate(e.paidAt ?? e.createdAt),
-      voucherNo: e.voucherNo,
-      description: e.description,
-      status: e.status,
-      amount: e.amount,
-    })),
+    expenses: expenses.map((e) => {
+      const paid = expensePaidAsOf(e, monthYear);
+      const outstanding = e.amount - paid;
+      return {
+        id: String(e._id),
+        date: shortDate(e.paidAt ?? e.createdAt),
+        voucherNo: e.voucherNo,
+        description: e.description,
+        status:
+          outstanding <= 0
+            ? EXPENSE_STATUS.PAID
+            : paid > 0
+              ? EXPENSE_STATUS.PARTIAL
+              : EXPENSE_STATUS.DUE,
+        amount: e.amount,
+        paidAmount: paid,
+        outstanding,
+        fromMonth: e.monthYear !== monthYear ? e.monthYear : null,
+      };
+    }),
     withdrawals: withdrawals.map((w) => ({
       id: String(w._id),
       date: shortDate(w.takenAt ?? w.createdAt),
       takenBy: w.takenBy,
       note: w.note ?? null,
       amount: w.amount,
+      outstanding: w.amount - withdrawalReturnedAsOf(w, monthYear),
+      fromMonth: w.monthYear !== monthYear ? w.monthYear : null,
     })),
     totals,
   };

@@ -6,7 +6,11 @@ import { connectDB } from "@/lib/db";
 import { User } from "@/models/User";
 import { Building } from "@/models/Building";
 import { ConfirmSubmit } from "@/components/confirm-submit";
-import { CreateManagerForm, ManagerBuildingsForm } from "./forms";
+import {
+  CreateManagerForm,
+  ManagerBuildingsForm,
+  ManagerPasswordForm,
+} from "./forms";
 import { setManagerActive } from "./actions";
 
 export default async function ManagersPage() {
@@ -19,6 +23,8 @@ export default async function ManagersPage() {
     User.find({ role: ROLES.MANAGER }).sort({ createdAt: -1 }).lean(),
     Building.find().sort({ name: 1 }).lean(),
   ]);
+
+  const self = await User.findById(user.id).select("name email").lean();
 
   const buildingOptions = buildings.map((b) => ({
     id: String(b._id),
@@ -47,6 +53,22 @@ export default async function ManagersPage() {
           Add an admin
         </h2>
         <CreateManagerForm buildings={buildingOptions} />
+      </section>
+
+      <section className="rounded-lg border border-black/10 p-5 dark:border-white/15">
+        <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-black/50 dark:text-white/50">
+          Your password
+        </h2>
+        <p className="mb-4 text-sm text-black/55 dark:text-white/55">
+          Update your own SuperAdmin password.
+        </p>
+        <ManagerPasswordForm
+          userId={user.id}
+          displayName={self?.name ?? user.name ?? "SuperAdmin"}
+          email={self?.email ?? user.email ?? null}
+          submitLabel="Update my password"
+          confirmMessage="Update your own password?"
+        />
       </section>
 
       <section className="space-y-4">
@@ -130,6 +152,14 @@ export default async function ManagersPage() {
                       assignedIds={assignedIds}
                     />
                   ) : null}
+
+                  <ManagerPasswordForm
+                    userId={String(m._id)}
+                    displayName={m.name}
+                    email={m.email ?? null}
+                    submitLabel="Reset password"
+                    confirmMessage={`Reset password for ${m.name}?`}
+                  />
                 </div>
               );
             })}

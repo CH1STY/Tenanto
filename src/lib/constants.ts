@@ -44,6 +44,10 @@ export const INCOME_SOURCE = {
 } as const;
 export type IncomeSource = (typeof INCOME_SOURCE)[keyof typeof INCOME_SOURCE];
 
-export const EXPENSE_STATUS = { PAID: "PAID", DUE: "DUE" } as const;
+export const EXPENSE_STATUS = {
+  PAID: "PAID",
+  PARTIAL: "PARTIAL",
+  DUE: "DUE",
+} as const;
 export type ExpenseStatus =
   (typeof EXPENSE_STATUS)[keyof typeof EXPENSE_STATUS];

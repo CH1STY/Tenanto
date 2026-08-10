@@ -11,16 +11,22 @@ import {
 } from "@/lib/constants";
 import { connectDB } from "@/lib/db";
 import { Building } from "@/models/Building";
-import { Unit } from "@/models/Unit";
-import { User } from "@/models/User";
-import { Tenancy } from "@/models/Tenancy";
 import { MonthlyPeriod } from "@/models/MonthlyPeriod";
 import { Charge } from "@/models/Charge";
 import { Income } from "@/models/Income";
 import { Expense } from "@/models/Expense";
 import { Withdrawal } from "@/models/Withdrawal";
 import { Payment } from "@/models/Payment";
-import { getPeriodTotals } from "@/lib/ledger";
+import {
+  getPeriodTotals,
+  resolveMonthRoster,
+  paidByChargeAsOf,
+  chargeStateAsOf,
+  expenseMonthQuery,
+  withdrawalMonthQuery,
+  expensePaidAsOf,
+  withdrawalReturnedAsOf,
+} from "@/lib/ledger";
 import { monthLabel, currentMonthYear, cashbookFileName } from "@/lib/dates";
 import { compareUnitLabels } from "@/lib/units";
 import { objectIdSchema } from "@/lib/validators/building";
@@ -34,7 +40,11 @@ import {
   AddChargeForm,
   EditChargeForm,
   MonthNoteForm,
+  OpeningBalanceForm,
+  ExpensePayForm,
+  WithdrawalReturnForm,
   EntryDeleteButton,
+  EntryUndoButton,
   PrintButton,
 } from "./forms";
 import {
@@ -45,6 +55,8 @@ import {
   deleteExpense,
   deleteWithdrawal,
   reversePayment,
+  reverseExpensePayment,
+  reverseWithdrawalReturn,
 } from "./actions";
 
 const money = (n: number) => n.toLocaleString();
@@ -172,6 +184,7 @@ export default async function LedgerPage(props: {
             period={period}
             canReopen={!hasOpenMonth}
             canManageMonths={canManageMonths}
+            canAdjustPreviousDue={canManageMonths}
           />
         ) : periods.length === 0 ? (
           <p className="text-sm text-black/55 dark:text-white/55">
@@ -185,6 +198,7 @@ export default async function LedgerPage(props: {
         <PrintCashBook
           buildingId={buildingId}
           buildingName={building.name}
+          buildingAddress={building.address ?? null}
           period={period}
         />
       ) : null}
@@ -198,6 +212,7 @@ async function CashBook({
   period,
   canReopen,
   canManageMonths,
+  canAdjustPreviousDue,
 }: {
   buildingId: string;
   buildingName: string;
@@ -209,26 +224,46 @@ async function CashBook({
     status: string;
     closingBalance?: number | null;
     note?: string | null;
+    roster?: {
+      tenancyId: unknown;
+      userId: unknown;
+      unitId: unknown;
+      unitLabel?: string | null;
+      tenantName?: string | null;
+    }[];
   };
   canReopen: boolean;
   canManageMonths: boolean;
+  canAdjustPreviousDue: boolean;
 }) {
   const monthYear = period.monthYear;
   const isOpen = period.status === PERIOD_STATUS.OPEN;
 
   const [
-    tenancies,
+    roster,
     incomes,
-    expenses,
-    withdrawals,
+    rawExpenses,
+    rawWithdrawals,
     payments,
     totals,
     prevPeriod,
   ] = await Promise.all([
-    Tenancy.find({ buildingId, isActive: true }).lean(),
+    // A month's roster is the immutable snapshot taken when it opened; older
+    // months without a snapshot fall back to tenancy date ranges. On an open
+    // month also include past tenants who still owe so their dues stay
+    // collectable and carry forward.
+    resolveMonthRoster(buildingId, monthYear, period.roster, {
+      includeOutstanding: isOpen,
+    }),
     Income.find({ buildingId, monthYear }).sort({ createdAt: 1 }).lean(),
-    Expense.find({ buildingId, monthYear }).sort({ voucherNo: 1 }).lean(),
-    Withdrawal.find({ buildingId, monthYear }).sort({ createdAt: 1 }).lean(),
+    // Carried payables still owed as of this month join this month's expenses.
+    Expense.find(expenseMonthQuery(buildingId, monthYear))
+      .sort({ monthYear: 1, voucherNo: 1 })
+      .lean(),
+    // Advances still out as of this month forward until fully returned.
+    Withdrawal.find(withdrawalMonthQuery(buildingId, monthYear))
+      .sort({ monthYear: 1, createdAt: 1 })
+      .lean(),
     Payment.find({ buildingId, monthYear }).sort({ createdAt: 1 }).lean(),
     getPeriodTotals(buildingId, monthYear),
     MonthlyPeriod.findOne({ buildingId, monthYear: { $lt: monthYear } })
@@ -237,20 +272,40 @@ async function CashBook({
       .lean(),
   ]);
 
+  // Settle expenses/withdrawals only with log entries up to this month, so a
+  // payable cleared later still reads as owed here and legacy paid rows aren't
+  // dragged forward as dues.
+  const expenses = rawExpenses.map((e) => ({
+    ...e,
+    paidAmount: expensePaidAsOf(e, monthYear),
+  }));
+  const withdrawals = rawWithdrawals.map((w) => ({
+    ...w,
+    returnedAmount: withdrawalReturnedAsOf(w, monthYear),
+  }));
+
   const prevNote = prevPeriod?.note?.trim() ? prevPeriod.note.trim() : null;
   const prevNoteMonth = prevPeriod?.monthYear ?? null;
+  const hasPreviousPeriod = Boolean(prevPeriod);
 
-  const tenancyIds = tenancies.map((t) => t._id);
-  const [units, users, charges] = await Promise.all([
-    Unit.find({ buildingId }).lean(),
-    User.find({ _id: { $in: tenancies.map((t) => t.userId) } }).lean(),
-    Charge.find({ tenancyId: { $in: tenancyIds } })
-      .sort({ monthYear: 1 })
-      .lean(),
-  ]);
+  const tenancyIds = roster.map((r) => r.tenancyId);
+  // This month's and earlier charges only — a later month's dues must never
+  // leak into a reopened past cash book.
+  const rawCharges = await Charge.find({
+    tenancyId: { $in: tenancyIds },
+    monthYear: { $lte: monthYear },
+  })
+    .sort({ monthYear: 1 })
+    .lean();
 
-  const unitLabel = new Map(units.map((u) => [String(u._id), u.label]));
-  const userName = new Map(users.map((u) => [String(u._id), u.name]));
+  // Show each charge as it stood in THIS month: settle it only with payments
+  // received up to and including this month, so a due paid in a later month
+  // still reads as outstanding here instead of being back-dated as paid.
+  const paidAsOf = await paidByChargeAsOf(buildingId, monthYear);
+  const charges = rawCharges.map((c) => {
+    const state = chargeStateAsOf(c.amount, paidAsOf.get(String(c._id)) ?? 0);
+    return { ...c, paidAmount: state.paidAmount, status: state.status };
+  });
 
   // Charges to show per tenancy: this month's service charge + any outstanding.
   const chargesByTenancy = new Map<string, typeof charges>();
@@ -286,25 +341,149 @@ async function CashBook({
     paymentsByTenancy.set(key, list);
   }
 
-  const rows = tenancies
-    .map((t) => ({
-      tenancyId: String(t._id),
-      unit: unitLabel.get(String(t.unitId)) ?? "?",
-      name: userName.get(String(t.userId)) ?? "Tenant",
-      charges: chargesByTenancy.get(String(t._id)) ?? [],
-      payments: paymentsByTenancy.get(String(t._id)) ?? [],
-      due: dueByTenancy.get(String(t._id)) ?? 0,
+  const rows = roster
+    .map((r) => ({
+      tenancyId: r.tenancyId,
+      unit: r.unitLabel,
+      name: r.tenantName,
+      isPastTenant: r.isPastForMonth,
+      charges: chargesByTenancy.get(r.tenancyId) ?? [],
+      payments: paymentsByTenancy.get(r.tenancyId) ?? [],
+      due: dueByTenancy.get(r.tenancyId) ?? 0,
     }))
     .sort((a, b) => compareUnitLabels(a.unit, b.unit));
 
-  const tenantOptions = rows.map((r) => ({
+  // Active tenants render in the main receipts list; past tenants with a
+  // pending due appear in their own section so the two never mix.
+  const activeRows = rows.filter((r) => !r.isPastTenant);
+  const pastDueRows = rows.filter((r) => r.isPastTenant && r.due > 0);
+
+  const tenantOptions = activeRows.map((r) => ({
     tenancyId: r.tenancyId,
     label: `${r.unit} · ${r.name}`,
   }));
 
+  const renderReceiptRow = (r: (typeof rows)[number]) => (
+    <div key={r.tenancyId} className="print-avoid-break px-4 py-3">
+      <div className="flex items-center justify-between text-sm">
+        <span className="font-medium">
+          {r.unit} · {r.name}
+          {r.isPastTenant ? (
+            <span className="ml-1 text-[10px] font-medium uppercase tracking-wide text-black/45 dark:text-white/45">
+              (Past tenant)
+            </span>
+          ) : null}
+        </span>
+        <span
+          className={
+            r.due > 0
+              ? "text-xs font-medium text-red-600 dark:text-red-400"
+              : "text-xs text-black/40 dark:text-white/40"
+          }
+        >
+          {r.due > 0 ? `Due ${money(r.due)}` : "No due"}
+        </span>
+      </div>
+      {r.charges.length === 0 ? (
+        <p className="mt-1 text-xs text-black/45 dark:text-white/45">
+          No charges.
+        </p>
+      ) : (
+        <ul className="mt-2 space-y-2">
+          {r.charges.map((c) => {
+            const remaining = c.amount - c.paidAmount;
+            return (
+              <li key={String(c._id)} className="text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-black/70 dark:text-white/70">
+                    {c.description}
+                    {c.monthYear !== monthYear ? (
+                      <span className="ml-1 text-black/40 dark:text-white/40">
+                        ({monthLabel(c.monthYear)})
+                      </span>
+                    ) : null}
+                  </span>
+                  {remaining > 0 ? (
+                    <span className="shrink-0 tabular-nums font-medium text-red-600 dark:text-red-400">
+                      Due {money(remaining)}
+                    </span>
+                  ) : (
+                    <span className="shrink-0 text-green-600 dark:text-green-400">
+                      Paid
+                    </span>
+                  )}
+                </div>
+                <div className="mt-0.5 text-[11px] text-black/45 dark:text-white/45">
+                  Total {money(c.amount)}
+                  {c.paidAmount > 0 ? ` · Paid ${money(c.paidAmount)}` : ""}
+                </div>
+                {isOpen && remaining > 0 ? (
+                  <PayForm
+                    buildingId={buildingId}
+                    monthYear={monthYear}
+                    chargeId={String(c._id)}
+                    remaining={remaining}
+                  />
+                ) : null}
+                {isOpen &&
+                c.category !== CHARGE_CATEGORY.SERVICE_CHARGE &&
+                (c.monthYear === monthYear || canAdjustPreviousDue) ? (
+                  <EditChargeForm
+                    buildingId={buildingId}
+                    monthYear={monthYear}
+                    chargeId={String(c._id)}
+                    description={c.description}
+                    amount={c.amount}
+                    isPreviousMonth={c.monthYear !== monthYear}
+                    canDelete={
+                      c.paidAmount === 0 &&
+                      (c.monthYear === monthYear || canAdjustPreviousDue)
+                    }
+                  />
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {r.payments.length > 0 ? (
+        <ul className="mt-2 space-y-1 border-t border-black/5 pt-2 dark:border-white/10">
+          {r.payments.map((p) => (
+            <li
+              key={String(p._id)}
+              className="flex items-center justify-between text-xs text-black/60 dark:text-white/60"
+            >
+              <span>
+                <span className="text-black/40 dark:text-white/40">
+                  {shortDate(p.receivedAt ?? p.createdAt)}
+                </span>{" "}
+                received
+              </span>
+              <span className="flex items-center tabular-nums">
+                {money(p.totalAmount)}
+                {isOpen ? (
+                  <EntryDeleteButton
+                    action={reversePayment}
+                    buildingId={buildingId}
+                    monthYear={monthYear}
+                    id={String(p._id)}
+                    title="Reverse payment"
+                    message={`Reverse this payment of ${money(
+                      p.totalAmount,
+                    )}? The tenant's charges will be restored.`}
+                  />
+                ) : null}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+
   const totalReceipts = period.openingBalance + totals.payments + totals.income;
   const cashInHand = totalReceipts - totals.expensesPaid;
-  const closing = cashInHand - totals.withdrawals;
+  const closing = cashInHand - totals.withdrawals + totals.withdrawalsReturned;
 
   return (
     <div>
@@ -378,6 +557,14 @@ async function CashBook({
         />
       </div>
 
+      {isOpen && !hasPreviousPeriod ? (
+        <OpeningBalanceForm
+          buildingId={buildingId}
+          monthYear={monthYear}
+          openingBalance={period.openingBalance}
+        />
+      ) : null}
+
       {/* Notes: carried-in note from the previous month + this month's editable note. */}
       {prevNote || isOpen ? (
         <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -420,116 +607,18 @@ async function CashBook({
               strong
             />
 
-            {rows.map((r) => (
-              <div key={r.tenancyId} className="print-avoid-break px-4 py-3">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="font-medium">
-                    {r.unit} · {r.name}
-                  </span>
-                  <span
-                    className={
-                      r.due > 0
-                        ? "text-xs font-medium text-red-600 dark:text-red-400"
-                        : "text-xs text-black/40 dark:text-white/40"
-                    }
-                  >
-                    {r.due > 0 ? `Due ${money(r.due)}` : "No due"}
-                  </span>
+            {activeRows.map(renderReceiptRow)}
+
+            {pastDueRows.length > 0 ? (
+              <div className="print-avoid-break px-4 py-3">
+                <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-black/45 dark:text-white/45">
+                  Past tenants — dues pending
+                </p>
+                <div className="divide-y divide-black/5 dark:divide-white/10">
+                  {pastDueRows.map(renderReceiptRow)}
                 </div>
-                {r.charges.length === 0 ? (
-                  <p className="mt-1 text-xs text-black/45 dark:text-white/45">
-                    No charges.
-                  </p>
-                ) : (
-                  <ul className="mt-2 space-y-2">
-                    {r.charges.map((c) => {
-                      const remaining = c.amount - c.paidAmount;
-                      return (
-                        <li key={String(c._id)} className="text-xs">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="text-black/70 dark:text-white/70">
-                              {c.description}
-                              {c.monthYear !== monthYear ? (
-                                <span className="ml-1 text-black/40 dark:text-white/40">
-                                  ({monthLabel(c.monthYear)})
-                                </span>
-                              ) : null}
-                            </span>
-                            {remaining > 0 ? (
-                              <span className="shrink-0 tabular-nums font-medium text-red-600 dark:text-red-400">
-                                Due {money(remaining)}
-                              </span>
-                            ) : (
-                              <span className="shrink-0 text-green-600 dark:text-green-400">
-                                Paid
-                              </span>
-                            )}
-                          </div>
-                          <div className="mt-0.5 text-[11px] text-black/45 dark:text-white/45">
-                            Total {money(c.amount)}
-                            {c.paidAmount > 0
-                              ? ` · Paid ${money(c.paidAmount)}`
-                              : ""}
-                          </div>
-                          {isOpen && remaining > 0 ? (
-                            <PayForm
-                              buildingId={buildingId}
-                              monthYear={monthYear}
-                              chargeId={String(c._id)}
-                              remaining={remaining}
-                            />
-                          ) : null}
-                          {isOpen &&
-                          c.monthYear === monthYear &&
-                          c.category !== CHARGE_CATEGORY.SERVICE_CHARGE ? (
-                            <EditChargeForm
-                              buildingId={buildingId}
-                              monthYear={monthYear}
-                              chargeId={String(c._id)}
-                              description={c.description}
-                              amount={c.amount}
-                              canDelete={c.paidAmount === 0}
-                            />
-                          ) : null}
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-                {r.payments.length > 0 ? (
-                  <ul className="mt-2 space-y-1 border-t border-black/5 pt-2 dark:border-white/10">
-                    {r.payments.map((p) => (
-                      <li
-                        key={String(p._id)}
-                        className="flex items-center justify-between text-xs text-black/60 dark:text-white/60"
-                      >
-                        <span>
-                          <span className="text-black/40 dark:text-white/40">
-                            {shortDate(p.receivedAt ?? p.createdAt)}
-                          </span>{" "}
-                          received
-                        </span>
-                        <span className="flex items-center tabular-nums">
-                          {money(p.totalAmount)}
-                          {isOpen ? (
-                            <EntryDeleteButton
-                              action={reversePayment}
-                              buildingId={buildingId}
-                              monthYear={monthYear}
-                              id={String(p._id)}
-                              title="Reverse payment"
-                              message={`Reverse this payment of ${money(
-                                p.totalAmount,
-                              )}? The tenant's charges will be restored.`}
-                            />
-                          ) : null}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
               </div>
-            ))}
+            ) : null}
 
             {/* Add a tenant bill or previous due mid-month */}
             {isOpen ? (
@@ -596,6 +685,12 @@ async function CashBook({
               ) : null}
             </div>
 
+            {totals.withdrawalsReturned > 0 ? (
+              <Line
+                label="Withdrawals returned"
+                amount={totals.withdrawalsReturned}
+              />
+            ) : null}
             <Line
               label="Total receipts (incl. opening)"
               amount={totalReceipts}
@@ -617,44 +712,89 @@ async function CashBook({
                 </p>
               ) : (
                 <ul className="space-y-1">
-                  {expenses.map((e) => (
-                    <li
-                      key={String(e._id)}
-                      className="flex items-center justify-between text-xs"
-                    >
-                      <span className="text-black/70 dark:text-white/70">
-                        <span className="text-black/40 dark:text-white/40">
-                          {e.paidAt
-                            ? shortDate(e.paidAt)
-                            : shortDate(e.createdAt)}
-                        </span>{" "}
-                        <span className="text-black/40 dark:text-white/40">
-                          V#{e.voucherNo}
-                        </span>{" "}
-                        {e.description}
-                        {e.status === EXPENSE_STATUS.DUE ? (
-                          <span className="ml-1 text-red-600 dark:text-red-400">
-                            DUE
+                  {expenses.map((e) => {
+                    const carried = e.monthYear !== monthYear;
+                    const paid = e.paidAmount ?? 0;
+                    const outstanding = e.amount - paid;
+                    const payments = e.payments ?? [];
+                    const lastPayment = payments[payments.length - 1];
+                    // Undo peels the last payment made this month; delete removes
+                    // the whole row but only when it holds no other month's log.
+                    const canUndoPayment =
+                      isOpen && lastPayment?.monthYear === monthYear;
+                    const canDelete =
+                      isOpen &&
+                      !carried &&
+                      payments.every((p) => p.monthYear === monthYear);
+                    return (
+                      <li key={String(e._id)} className="text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="text-black/70 dark:text-white/70">
+                            <span className="text-black/40 dark:text-white/40">
+                              {e.paidAt
+                                ? shortDate(e.paidAt)
+                                : shortDate(e.createdAt)}
+                            </span>{" "}
+                            <span className="text-black/40 dark:text-white/40">
+                              V#{e.voucherNo}
+                            </span>{" "}
+                            {e.description}
+                            {carried ? (
+                              <span className="ml-1 text-black/40 dark:text-white/40">
+                                (due from {monthLabel(e.monthYear)})
+                              </span>
+                            ) : null}
+                            {outstanding > 0 ? (
+                              <span className="ml-1 text-red-600 dark:text-red-400">
+                                {paid > 0 ? "PARTIAL" : "DUE"}
+                              </span>
+                            ) : null}
                           </span>
+                          <span className="flex items-center gap-2 tabular-nums">
+                            {money(e.amount)}
+                            {canUndoPayment ? (
+                              <EntryUndoButton
+                                action={reverseExpensePayment}
+                                buildingId={buildingId}
+                                monthYear={monthYear}
+                                id={String(e._id)}
+                                title="Undo last payment"
+                                message={`Undo the last payment of ${money(
+                                  lastPayment.amount,
+                                )} on V#${e.voucherNo} "${e.description}"?`}
+                              />
+                            ) : null}
+                            {canDelete ? (
+                              <EntryDeleteButton
+                                action={deleteExpense}
+                                buildingId={buildingId}
+                                monthYear={monthYear}
+                                id={String(e._id)}
+                                title="Delete expense"
+                                message={`Delete expense V#${e.voucherNo} "${e.description}" (${money(
+                                  e.amount,
+                                )})?${paid > 0 ? " Its recorded payment(s) will be removed too." : ""}`}
+                              />
+                            ) : null}
+                          </span>
+                        </div>
+                        {outstanding > 0 ? (
+                          <p className="mt-0.5 text-[11px] text-black/45 dark:text-white/45">
+                            {paid > 0 ? `Paid ${money(paid)} · ` : ""}
+                            Outstanding {money(outstanding)}
+                          </p>
                         ) : null}
-                      </span>
-                      <span className="flex items-center tabular-nums">
-                        {money(e.amount)}
-                        {isOpen ? (
-                          <EntryDeleteButton
-                            action={deleteExpense}
+                        {isOpen && outstanding > 0 ? (
+                          <ExpensePayForm
                             buildingId={buildingId}
                             monthYear={monthYear}
-                            id={String(e._id)}
-                            title="Delete expense"
-                            message={`Delete expense V#${e.voucherNo} "${e.description}" (${money(
-                              e.amount,
-                            )})?`}
+                            expenseId={String(e._id)}
+                            outstanding={outstanding}
                           />
                         ) : null}
-                      </span>
-                    </li>
-                  ))}
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
               {isOpen ? (
@@ -680,41 +820,92 @@ async function CashBook({
                   None.
                 </p>
               ) : (
-                <ul className="mt-2 space-y-1">
-                  {withdrawals.map((w) => (
-                    <li
-                      key={String(w._id)}
-                      className="flex items-center justify-between text-xs"
-                    >
-                      <span className="text-black/70 dark:text-white/70">
-                        <span className="text-black/40 dark:text-white/40">
-                          {shortDate(w.takenAt ?? w.createdAt)}
-                        </span>{" "}
-                        {w.takenBy}
-                        {w.note ? (
-                          <span className="text-black/40 dark:text-white/40">
-                            {" "}
-                            · {w.note}
+                <ul className="mt-2 space-y-2">
+                  {withdrawals.map((w) => {
+                    const carried = w.monthYear !== monthYear;
+                    const returned = w.returnedAmount ?? 0;
+                    const outstanding = w.amount - returned;
+                    const returns = w.returns ?? [];
+                    const lastReturn = returns[returns.length - 1];
+                    // Undo peels the last return made this month; delete removes
+                    // the whole row but only when it holds no other month's log.
+                    const canUndoReturn =
+                      isOpen && lastReturn?.monthYear === monthYear;
+                    const canDelete =
+                      isOpen &&
+                      !carried &&
+                      returns.every((r) => r.monthYear === monthYear);
+                    return (
+                      <li key={String(w._id)} className="text-xs">
+                        <div className="flex items-center justify-between">
+                          <span className="text-black/70 dark:text-white/70">
+                            <span className="text-black/40 dark:text-white/40">
+                              {shortDate(w.takenAt ?? w.createdAt)}
+                            </span>{" "}
+                            {w.takenBy}
+                            {w.note ? (
+                              <span className="text-black/40 dark:text-white/40">
+                                {" "}
+                                · {w.note}
+                              </span>
+                            ) : null}
+                            {carried ? (
+                              <span className="ml-1 text-black/40 dark:text-white/40">
+                                (advance from {monthLabel(w.monthYear)})
+                              </span>
+                            ) : null}
                           </span>
-                        ) : null}
-                      </span>
-                      <span className="flex items-center tabular-nums">
-                        {money(w.amount)}
-                        {isOpen ? (
-                          <EntryDeleteButton
-                            action={deleteWithdrawal}
+                          <span className="flex items-center gap-2 tabular-nums">
+                            {money(w.amount)}
+                            {canUndoReturn ? (
+                              <EntryUndoButton
+                                action={reverseWithdrawalReturn}
+                                buildingId={buildingId}
+                                monthYear={monthYear}
+                                id={String(w._id)}
+                                title="Undo last return"
+                                message={`Undo the last return of ${money(
+                                  lastReturn.amount,
+                                )} by ${w.takenBy}?`}
+                              />
+                            ) : null}
+                            {canDelete ? (
+                              <EntryDeleteButton
+                                action={deleteWithdrawal}
+                                buildingId={buildingId}
+                                monthYear={monthYear}
+                                id={String(w._id)}
+                                title="Delete withdrawal"
+                                message={`Delete withdrawal by ${w.takenBy} (${money(
+                                  w.amount,
+                                )})?${returned > 0 ? " Its recorded return(s) will be removed too." : ""}`}
+                              />
+                            ) : null}
+                          </span>
+                        </div>
+                        {outstanding > 0 ? (
+                          <p className="mt-0.5 text-[11px] text-black/45 dark:text-white/45">
+                            {returned > 0
+                              ? `Returned ${money(returned)} · `
+                              : ""}
+                            Outstanding {money(outstanding)}
+                          </p>
+                        ) : (
+                          <p className="mt-0.5 text-[11px] text-green-600 dark:text-green-400">
+                            Fully returned
+                          </p>
+                        )}
+                        {isOpen && outstanding > 0 ? (
+                          <WithdrawalReturnForm
                             buildingId={buildingId}
                             monthYear={monthYear}
-                            id={String(w._id)}
-                            title="Delete withdrawal"
-                            message={`Delete withdrawal by ${w.takenBy} (${money(
-                              w.amount,
-                            )})?`}
+                            withdrawalId={String(w._id)}
+                            outstanding={outstanding}
                           />
                         ) : null}
-                      </span>
-                    </li>
-                  ))}
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
               {isOpen ? (
@@ -827,36 +1018,53 @@ function DeleteMonthButton({
 async function PrintCashBook({
   buildingId,
   buildingName,
+  buildingAddress,
   period,
 }: {
   buildingId: string;
   buildingName: string;
+  buildingAddress: string | null;
   period: {
     monthYear: string;
     openingBalance: number;
     status: string;
     closingBalance?: number | null;
+    note?: string | null;
+    roster?: {
+      tenancyId: unknown;
+      userId: unknown;
+      unitId: unknown;
+      unitLabel?: string | null;
+      tenantName?: string | null;
+    }[];
   };
 }) {
   const monthYear = period.monthYear;
 
-  // The month's tenants = those a SERVICE_CHARGE was raised for when it opened.
+  // A month's tenants come from its immutable open-time snapshot (or a date
+  // reconstruction for older months); later assignments never appear here.
   const [
-    activeTenancies,
-    units,
+    roster,
     incomes,
-    expenses,
+    rawExpenses,
+    rawWithdrawals,
     payments,
-    monthCharges,
     totals,
     prevPeriod,
   ] = await Promise.all([
-    Tenancy.find({ buildingId, isActive: true }).lean(),
-    Unit.find({ buildingId }).lean(),
+    // On an open month, include past tenants who still owe so their dues
+    // print in the dedicated past-tenants section.
+    resolveMonthRoster(buildingId, monthYear, period.roster, {
+      includeOutstanding: period.status === PERIOD_STATUS.OPEN,
+    }),
     Income.find({ buildingId, monthYear }).sort({ receivedAt: 1 }).lean(),
-    Expense.find({ buildingId, monthYear }).sort({ voucherNo: 1 }).lean(),
+    Expense.find(expenseMonthQuery(buildingId, monthYear))
+      .sort({ monthYear: 1, voucherNo: 1 })
+      .lean(),
+    Withdrawal.find(withdrawalMonthQuery(buildingId, monthYear))
+      .sort({ monthYear: 1, takenAt: 1 })
+      .lean(),
     Payment.find({ buildingId, monthYear }).lean(),
-    Charge.find({ buildingId, monthYear }).lean(),
     getPeriodTotals(buildingId, monthYear),
     MonthlyPeriod.findOne({ buildingId, monthYear: { $lt: monthYear } })
       .sort({ monthYear: -1 })
@@ -864,31 +1072,49 @@ async function PrintCashBook({
       .lean(),
   ]);
 
-  // Show every currently-active tenant, plus anyone who transacted this month.
-  const tenancyIdSet = new Set(activeTenancies.map((t) => String(t._id)));
-  for (const c of monthCharges) tenancyIdSet.add(String(c.tenancyId));
-  for (const p of payments) tenancyIdSet.add(String(p.tenancyId));
-  const tenancyIds = [...tenancyIdSet];
+  // Settle each expense only with payments up to this month so a payable paid
+  // later still prints as owed here and legacy paid rows read as settled.
+  const expenses = rawExpenses.map((e) => {
+    const paid = expensePaidAsOf(e, monthYear);
+    return {
+      ...e,
+      paidAmount: paid,
+      status:
+        e.amount - paid <= 0
+          ? EXPENSE_STATUS.PAID
+          : paid > 0
+            ? EXPENSE_STATUS.PARTIAL
+            : EXPENSE_STATUS.DUE,
+    };
+  });
 
-  const [tenancies, dueCharges] = await Promise.all([
-    Tenancy.find({ _id: { $in: tenancyIds } }).lean(),
-    Charge.find({
+  // Advances shown with what was returned as of this month.
+  const withdrawals = rawWithdrawals.map((w) => ({
+    ...w,
+    returnedAmount: withdrawalReturnedAsOf(w, monthYear),
+  }));
+
+  const tenancyIds = roster.map((r) => r.tenancyId);
+  // Settle each charge only with payments up to this month, then keep the ones
+  // still owed then — so a due cleared in a later month still prints here.
+  const paidAsOf = await paidByChargeAsOf(buildingId, monthYear);
+  const dueCharges = (
+    await Charge.find({
       tenancyId: { $in: tenancyIds },
-      status: { $ne: CHARGE_STATUS.PAID },
+      monthYear: { $lte: monthYear },
     })
       .sort({ monthYear: 1 })
-      .lean(),
-  ]);
+      .lean()
+  )
+    .map((c) => {
+      const state = chargeStateAsOf(c.amount, paidAsOf.get(String(c._id)) ?? 0);
+      return { ...c, paidAmount: state.paidAmount, status: state.status };
+    })
+    .filter((c) => c.status !== CHARGE_STATUS.PAID);
 
   const prevNote = prevPeriod?.note?.trim() ? prevPeriod.note.trim() : null;
   const prevNoteMonth = prevPeriod?.monthYear ?? null;
-
-  const users = await User.find({
-    _id: { $in: tenancies.map((t) => t.userId) },
-  }).lean();
-
-  const unitLabel = new Map(units.map((u) => [String(u._id), u.label]));
-  const userName = new Map(users.map((u) => [String(u._id), u.name]));
+  const currentNote = period.note?.trim() ? period.note.trim() : null;
 
   const paidByTenancy = new Map<string, number>();
   for (const p of payments) {
@@ -903,13 +1129,14 @@ async function PrintCashBook({
     duesByTenancy.set(k, list);
   }
 
-  const rows = tenancies
-    .map((t) => {
-      const dues = duesByTenancy.get(String(t._id)) ?? [];
+  const rows = roster
+    .map((r) => {
+      const dues = duesByTenancy.get(r.tenancyId) ?? [];
       return {
-        unit: unitLabel.get(String(t.unitId)) ?? "?",
-        name: userName.get(String(t.userId)) ?? "Tenant",
-        paid: paidByTenancy.get(String(t._id)) ?? 0,
+        unit: r.unitLabel,
+        name: r.tenantName,
+        isPastTenant: r.isPastForMonth,
+        paid: paidByTenancy.get(r.tenancyId) ?? 0,
         dueTotal: dues.reduce((s, c) => s + (c.amount - c.paidAmount), 0),
         dues: dues.map((c) => ({
           id: String(c._id),
@@ -925,81 +1152,117 @@ async function PrintCashBook({
 
   const tenantPaidTotal = rows.reduce((s, r) => s + r.paid, 0);
   const incomeTotal = incomes.reduce((s, i) => s + i.amount, 0);
-  const totalReceipts = period.openingBalance + totals.payments + totals.income;
+  const totalReceipts =
+    period.openingBalance +
+    totals.payments +
+    totals.income +
+    totals.withdrawalsReturned;
   const cashInHand = totalReceipts - totals.expensesPaid - totals.withdrawals;
   const closing =
     period.status === PERIOD_STATUS.CLOSED && period.closingBalance != null
       ? period.closingBalance
       : cashInHand;
   const isCurrent = monthYear === currentMonthYear();
-  const expenseDues = expenses.filter((e) => e.status === EXPENSE_STATUS.DUE);
+  const withdrawalRows = withdrawals.map((w) => {
+    const returned = w.returnedAmount ?? 0;
+    return {
+      id: String(w._id),
+      takenBy: w.takenBy,
+      note: w.note ?? null,
+      fromMonth: w.monthYear !== monthYear ? w.monthYear : null,
+      amount: w.amount,
+      returned,
+      outstanding: w.amount - returned,
+    };
+  });
 
-  const cell = "border-b border-black/30 py-1";
+  const cell = "border-b border-black/25 py-[1.5px] align-top";
+
+  const activePrintRows = rows.filter((r) => !r.isPastTenant);
+  const pastDuePrintRows = rows.filter((r) => r.isPastTenant && r.dueTotal > 0);
+
+  const renderPrintRow = (r: (typeof rows)[number]) => (
+    <Fragment key={`${r.unit}-${r.name}`}>
+      <tr>
+        <td className={cell}>
+          {r.unit} · {r.name}
+        </td>
+        <td className={`${cell} text-right tabular-nums`}>{money(r.paid)}</td>
+        <td
+          className={`${cell} text-right tabular-nums ${
+            r.dueTotal > 0 ? "font-medium text-red-600" : ""
+          }`}
+        >
+          {r.dueTotal > 0 ? money(r.dueTotal) : "—"}
+        </td>
+      </tr>
+      {r.dues.map((d) => (
+        <tr key={d.id}>
+          <td className="py-0 pl-3 text-[9px] text-black/70">
+            ↳ {d.description} · {monthLabel(d.monthYear)}
+            <span className="text-black/50">
+              {" "}
+              (total {money(d.amount)}
+              {d.paidAmount > 0 ? `, paid ${money(d.paidAmount)}` : ""})
+            </span>
+          </td>
+          <td />
+          <td className="py-0 text-right text-[9px] tabular-nums text-red-600">
+            {money(d.remaining)}
+          </td>
+        </tr>
+      ))}
+    </Fragment>
+  );
 
   return (
-    <div className="print-only text-black">
+    <div className="print-only text-[10px] leading-tight text-black">
       <header className="text-center">
-        <h1 className="text-xl font-bold">{buildingName}</h1>
-        <p className="text-sm">Cash Book — {monthLabel(monthYear)}</p>
-        <p className="mt-1 text-sm">
-          Opening balance (cash in hand):{" "}
+        <h1 className="text-sm font-bold">{buildingName}</h1>
+        {buildingAddress ? (
+          <p className="text-[9px]">{buildingAddress}</p>
+        ) : null}
+        <p className="text-[10px] font-medium">
+          Cash Book — {monthLabel(monthYear)}{" "}
+          <span className="font-normal">
+            ({period.status === PERIOD_STATUS.CLOSED ? "Closed" : "Open"})
+          </span>
+        </p>
+        <p className="text-[10px]">
+          Opening (cash in hand):{" "}
           <span className="font-semibold">{money(period.openingBalance)}</span>
         </p>
       </header>
 
-      <div className="mt-4 grid grid-cols-2 gap-6">
+      <div className="mt-2 grid grid-cols-2 gap-4">
         {/* Left — receipts */}
-        <div>
-          <h2 className="border-b-2 border-black pb-1 text-sm font-bold">
+        <div className="print-avoid-break">
+          <h2 className="border-b border-black pb-0.5 text-[11px] font-bold">
             Dr. — Receipts
           </h2>
-          <table className="w-full text-xs">
+          <table className="w-full">
             <thead>
-              <tr className="text-left">
-                <th className="py-1">Particulars</th>
-                <th className="py-1 text-right">Paid</th>
-                <th className="py-1 text-right">Due</th>
+              <tr className="text-left text-[9px]">
+                <th className="py-0.5">Particulars</th>
+                <th className="py-0.5 text-right">Paid</th>
+                <th className="py-0.5 text-right">Due</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
-                <Fragment key={`${r.unit}-${r.name}`}>
+              {activePrintRows.map(renderPrintRow)}
+              {pastDuePrintRows.length > 0 ? (
+                <>
                   <tr>
-                    <td className={cell}>
-                      {r.unit} · {r.name}
-                    </td>
-                    <td className={`${cell} text-right tabular-nums`}>
-                      {money(r.paid)}
-                    </td>
                     <td
-                      className={`${cell} text-right tabular-nums ${
-                        r.dueTotal > 0 ? "font-medium text-red-600" : ""
-                      }`}
+                      className="pt-1 pb-0.5 text-[9px] font-semibold uppercase"
+                      colSpan={3}
                     >
-                      {r.dueTotal > 0 ? money(r.dueTotal) : "—"}
+                      Past tenants — dues pending
                     </td>
                   </tr>
-                  {r.dues.map((d) => (
-                    <tr key={d.id}>
-                      <td className="py-0.5 pl-4 text-black/70">
-                        ↳ {d.description} · {monthLabel(d.monthYear)}
-                        <span className="text-black/50">
-                          {" "}
-                          (total {money(d.amount)}
-                          {d.paidAmount > 0
-                            ? `, paid ${money(d.paidAmount)}`
-                            : ""}
-                          )
-                        </span>
-                      </td>
-                      <td />
-                      <td className="py-0.5 text-right tabular-nums text-red-600">
-                        {money(d.remaining)}
-                      </td>
-                    </tr>
-                  ))}
-                </Fragment>
-              ))}
+                  {pastDuePrintRows.map(renderPrintRow)}
+                </>
+              ) : null}
               {incomes.map((i) => (
                 <tr key={String(i._id)}>
                   <td className={cell}>
@@ -1012,12 +1275,23 @@ async function PrintCashBook({
                   <td className={cell} />
                 </tr>
               ))}
+              {totals.withdrawalsReturned > 0 ? (
+                <tr>
+                  <td className={cell}>Withdrawals returned</td>
+                  <td className={`${cell} text-right tabular-nums`}>
+                    {money(totals.withdrawalsReturned)}
+                  </td>
+                  <td className={cell} />
+                </tr>
+              ) : null}
             </tbody>
             <tfoot>
               <tr className="font-semibold">
-                <td className="py-1">Total receipts</td>
-                <td className="py-1 text-right tabular-nums">
-                  {money(tenantPaidTotal + incomeTotal)}
+                <td className="py-0.5">Total receipts</td>
+                <td className="py-0.5 text-right tabular-nums">
+                  {money(
+                    tenantPaidTotal + incomeTotal + totals.withdrawalsReturned,
+                  )}
                 </td>
                 <td />
               </tr>
@@ -1026,15 +1300,15 @@ async function PrintCashBook({
         </div>
 
         {/* Right — expenses */}
-        <div>
-          <h2 className="border-b-2 border-black pb-1 text-sm font-bold">
+        <div className="print-avoid-break">
+          <h2 className="border-b border-black pb-0.5 text-[11px] font-bold">
             Cr. — Payments / Expenses
           </h2>
-          <table className="w-full text-xs">
+          <table className="w-full">
             <thead>
-              <tr className="text-left">
-                <th className="py-1">Particulars</th>
-                <th className="py-1 text-right">Amount</th>
+              <tr className="text-left text-[9px]">
+                <th className="py-0.5">Particulars</th>
+                <th className="py-0.5 text-right">Amount</th>
               </tr>
             </thead>
             <tbody>
@@ -1050,11 +1324,17 @@ async function PrintCashBook({
                     <td className={cell}>
                       <span className="text-black/60">V#{e.voucherNo}</span>{" "}
                       {e.description}
+                      {e.monthYear !== monthYear ? (
+                        <span className="text-black/50">
+                          {" "}
+                          (due from {monthLabel(e.monthYear)})
+                        </span>
+                      ) : null}
                       {e.status === EXPENSE_STATUS.DUE ? (
                         <span className="text-red-600"> (DUE)</span>
-                      ) : (
-                        ""
-                      )}
+                      ) : e.status === EXPENSE_STATUS.PARTIAL ? (
+                        <span className="text-red-600"> (PARTIAL)</span>
+                      ) : null}
                     </td>
                     <td className={`${cell} text-right tabular-nums`}>
                       {money(e.amount)}
@@ -1065,8 +1345,8 @@ async function PrintCashBook({
             </tbody>
             <tfoot>
               <tr className="font-semibold">
-                <td className="py-1">Total expenses (paid)</td>
-                <td className="py-1 text-right tabular-nums">
+                <td className="py-0.5">Total expenses (paid)</td>
+                <td className="py-0.5 text-right tabular-nums">
                   {money(totals.expensesPaid)}
                 </td>
               </tr>
@@ -1075,41 +1355,92 @@ async function PrintCashBook({
         </div>
       </div>
 
-      {/* Notes & other dues */}
-      <div className="mt-4">
-        <h2 className="border-b border-black pb-1 text-sm font-bold">
-          Notes &amp; outstanding dues
-        </h2>
-        {prevNote ? (
-          <p className="mt-1 whitespace-pre-wrap text-xs">
-            <span className="font-semibold">
-              Note from{" "}
-              {prevNoteMonth ? monthLabel(prevNoteMonth) : "previous month"}:
-            </span>{" "}
-            {prevNote}
-          </p>
-        ) : null}
-        {expenseDues.length === 0 ? (
-          <p className="mt-1 text-xs text-black/60">No outstanding payables.</p>
-        ) : (
-          <ul className="mt-1 text-xs">
-            {expenseDues.map((e) => (
-              <li
-                key={String(e._id)}
-                className="flex justify-between border-b border-black/20 py-1"
-              >
-                <span>
-                  V#{e.voucherNo} {e.description}
-                </span>
-                <span className="tabular-nums">{money(e.amount)}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      {/* Withdrawals — taken, returned, pending */}
+      {withdrawalRows.length > 0 ? (
+        <div className="mt-2 print-avoid-break">
+          <h2 className="border-b border-black pb-0.5 text-[11px] font-bold">
+            Withdrawals (advances)
+          </h2>
+          <table className="w-full">
+            <thead>
+              <tr className="text-left text-[9px]">
+                <th className="py-0.5">Taken by</th>
+                <th className="py-0.5 text-right">Taken</th>
+                <th className="py-0.5 text-right">Returned</th>
+                <th className="py-0.5 text-right">Pending</th>
+                <th className="py-0.5 text-right">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {withdrawalRows.map((w) => (
+                <tr key={w.id}>
+                  <td className={cell}>
+                    {w.takenBy}
+                    {w.note ? (
+                      <span className="text-black/50"> · {w.note}</span>
+                    ) : null}
+                    {w.fromMonth ? (
+                      <span className="text-black/50">
+                        {" "}
+                        (from {monthLabel(w.fromMonth)})
+                      </span>
+                    ) : null}
+                  </td>
+                  <td className={`${cell} text-right tabular-nums`}>
+                    {money(w.amount)}
+                  </td>
+                  <td className={`${cell} text-right tabular-nums`}>
+                    {w.returned > 0 ? money(w.returned) : "—"}
+                  </td>
+                  <td
+                    className={`${cell} text-right tabular-nums ${
+                      w.outstanding > 0 ? "font-medium text-red-600" : ""
+                    }`}
+                  >
+                    {w.outstanding > 0 ? money(w.outstanding) : "—"}
+                  </td>
+                  <td className={`${cell} text-right`}>
+                    {w.outstanding <= 0
+                      ? "Repaid"
+                      : w.returned > 0
+                        ? "Partial"
+                        : "Pending"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
+      {/* Notes */}
+      {currentNote || prevNote ? (
+        <div className="mt-2 print-avoid-break">
+          <h2 className="border-b border-black pb-0.5 text-[11px] font-bold">
+            Notes
+          </h2>
+          {currentNote ? (
+            <p className="mt-0.5 whitespace-pre-wrap">
+              <span className="font-semibold">
+                Note for {monthLabel(monthYear)}:
+              </span>{" "}
+              {currentNote}
+            </p>
+          ) : null}
+          {prevNote ? (
+            <p className="mt-0.5 whitespace-pre-wrap">
+              <span className="font-semibold">
+                Note from{" "}
+                {prevNoteMonth ? monthLabel(prevNoteMonth) : "previous month"}:
+              </span>{" "}
+              {prevNote}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* Footer — cash in hand */}
-      <div className="mt-4 border-t-2 border-black pt-2 text-sm">
+      <div className="mt-2 border-t border-black pt-1 print-avoid-break">
         <div className="flex justify-between">
           <span>Total receipts (incl. opening)</span>
           <span className="tabular-nums">{money(totalReceipts)}</span>
@@ -1124,7 +1455,7 @@ async function PrintCashBook({
             <span className="tabular-nums">{money(totals.withdrawals)}</span>
           </div>
         ) : null}
-        <div className="mt-1 flex justify-between border-t border-black pt-1 text-base font-bold">
+        <div className="mt-0.5 flex justify-between border-t border-black pt-0.5 text-[12px] font-bold">
           <span>
             {isCurrent
               ? "Current cash in hand"

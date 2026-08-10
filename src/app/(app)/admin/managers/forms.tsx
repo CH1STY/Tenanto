@@ -3,9 +3,11 @@
 import { useActionState } from "react";
 import {
   createManager,
+  updateAdminPassword,
   updateManagerBuildings,
   type ActionState,
 } from "./actions";
+import { ConfirmSubmit } from "@/components/confirm-submit";
 
 const initial: ActionState = { error: null };
 
@@ -154,6 +156,49 @@ export function ManagerBuildingsForm({
         </button>
         <Message state={state} />
       </div>
+    </form>
+  );
+}
+
+export function ManagerPasswordForm({
+  userId,
+  displayName,
+  email,
+  submitLabel,
+  confirmMessage,
+}: {
+  userId: string;
+  displayName: string;
+  email: string | null;
+  submitLabel: string;
+  confirmMessage: string;
+}) {
+  const [state, action, pending] = useActionState(updateAdminPassword, initial);
+
+  return (
+    <form action={action} className="mt-4 space-y-2">
+      <input type="hidden" name="userId" value={userId} />
+      <label className={labelCls} htmlFor={`password-${userId}`}>
+        New password for {displayName}
+        {email ? ` (${email})` : ""}
+      </label>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <input
+          id={`password-${userId}`}
+          name="password"
+          type="password"
+          minLength={8}
+          required
+          className={inputCls}
+        />
+        <ConfirmSubmit
+          message={confirmMessage}
+          className="inline-flex h-9 items-center justify-center rounded-md border border-black/15 px-3 text-sm font-medium hover:bg-black/4 disabled:opacity-60 dark:border-white/20 dark:hover:bg-white/10"
+        >
+          {pending ? "Saving…" : submitLabel}
+        </ConfirmSubmit>
+      </div>
+      <Message state={state} />
     </form>
   );
 }

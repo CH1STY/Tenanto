@@ -6,11 +6,14 @@ import {
   recordPayment,
   addIncome,
   addExpense,
+  payExpense,
   addWithdrawal,
+  returnWithdrawal,
   addCharge,
   editCharge,
   removeCharge,
   updateMonthNote,
+  adjustOpeningBalance,
   type ActionState,
 } from "./actions";
 import { firstDayOfMonth, lastDayOfMonth } from "@/lib/dates";
@@ -277,6 +280,80 @@ export function WithdrawalForm({
   );
 }
 
+export function ExpensePayForm({
+  buildingId,
+  monthYear,
+  expenseId,
+  outstanding,
+}: {
+  buildingId: string;
+  monthYear: string;
+  expenseId: string;
+  outstanding: number;
+}) {
+  const [state, action, pending] = useActionState(payExpense, initial);
+  return (
+    <form action={action} className="no-print mt-1 flex items-center gap-2">
+      <input type="hidden" name="buildingId" value={buildingId} />
+      <input type="hidden" name="monthYear" value={monthYear} />
+      <input type="hidden" name="id" value={expenseId} />
+      <input
+        type="number"
+        name="amount"
+        min={1}
+        max={outstanding}
+        defaultValue={outstanding}
+        className="h-7 w-24 rounded-md border border-black/15 bg-transparent px-2 text-xs dark:border-white/20"
+      />
+      <button
+        type="submit"
+        disabled={pending}
+        className="inline-flex h-7 items-center justify-center rounded-md border border-green-500/40 px-2 text-[11px] font-medium text-green-600 hover:bg-green-500/10 disabled:opacity-60 dark:text-green-400"
+      >
+        {pending ? "…" : "Pay"}
+      </button>
+      <Msg state={state} />
+    </form>
+  );
+}
+
+export function WithdrawalReturnForm({
+  buildingId,
+  monthYear,
+  withdrawalId,
+  outstanding,
+}: {
+  buildingId: string;
+  monthYear: string;
+  withdrawalId: string;
+  outstanding: number;
+}) {
+  const [state, action, pending] = useActionState(returnWithdrawal, initial);
+  return (
+    <form action={action} className="no-print mt-1 flex items-center gap-2">
+      <input type="hidden" name="buildingId" value={buildingId} />
+      <input type="hidden" name="monthYear" value={monthYear} />
+      <input type="hidden" name="id" value={withdrawalId} />
+      <input
+        type="number"
+        name="amount"
+        min={1}
+        max={outstanding}
+        defaultValue={outstanding}
+        className="h-7 w-24 rounded-md border border-black/15 bg-transparent px-2 text-xs dark:border-white/20"
+      />
+      <button
+        type="submit"
+        disabled={pending}
+        className="inline-flex h-7 items-center justify-center rounded-md border border-green-500/40 px-2 text-[11px] font-medium text-green-600 hover:bg-green-500/10 disabled:opacity-60 dark:text-green-400"
+      >
+        {pending ? "…" : "Return"}
+      </button>
+      <Msg state={state} />
+    </form>
+  );
+}
+
 export function AddChargeForm({
   buildingId,
   monthYear,
@@ -374,6 +451,44 @@ export function EntryDeleteButton({
   );
 }
 
+export function EntryUndoButton({
+  action,
+  buildingId,
+  monthYear,
+  id,
+  message,
+  title = "Undo",
+}: {
+  action: DeleteAction;
+  buildingId: string;
+  monthYear: string;
+  id: string;
+  message: string;
+  title?: string;
+}) {
+  return (
+    <form
+      action={action}
+      className="no-print inline"
+      onSubmit={(e) => {
+        if (!window.confirm(message)) e.preventDefault();
+      }}
+    >
+      <input type="hidden" name="buildingId" value={buildingId} />
+      <input type="hidden" name="monthYear" value={monthYear} />
+      <input type="hidden" name="id" value={id} />
+      <button
+        type="submit"
+        title={title}
+        aria-label={title}
+        className="ml-2 text-[11px] text-black/40 hover:text-amber-600 dark:text-white/40 dark:hover:text-amber-400"
+      >
+        ↩ undo
+      </button>
+    </form>
+  );
+}
+
 export function MonthNoteForm({
   buildingId,
   monthYear,
@@ -405,12 +520,52 @@ export function MonthNoteForm({
   );
 }
 
+export function OpeningBalanceForm({
+  buildingId,
+  monthYear,
+  openingBalance,
+}: {
+  buildingId: string;
+  monthYear: string;
+  openingBalance: number;
+}) {
+  const [state, action, pending] = useActionState(
+    adjustOpeningBalance,
+    initial,
+  );
+
+  return (
+    <form
+      action={action}
+      className="no-print mt-4 flex flex-wrap items-end gap-2"
+    >
+      <input type="hidden" name="buildingId" value={buildingId} />
+      <input type="hidden" name="monthYear" value={monthYear} />
+      <div className="w-56">
+        <label className={label}>Adjust opening cash in hand</label>
+        <input
+          type="number"
+          name="openingBalance"
+          min={0}
+          defaultValue={openingBalance}
+          className={input}
+        />
+      </div>
+      <button type="submit" disabled={pending} className={btn}>
+        {pending ? "…" : "Save opening cash"}
+      </button>
+      <Msg state={state} />
+    </form>
+  );
+}
+
 export function EditChargeForm({
   buildingId,
   monthYear,
   chargeId,
   description,
   amount,
+  isPreviousMonth,
   canDelete,
 }: {
   buildingId: string;
@@ -418,6 +573,7 @@ export function EditChargeForm({
   chargeId: string;
   description: string;
   amount: number;
+  isPreviousMonth: boolean;
   canDelete: boolean;
 }) {
   const [state, action, pending] = useActionState(editCharge, initial);
@@ -426,7 +582,9 @@ export function EditChargeForm({
   return (
     <div className="no-print mt-1 space-y-1 border-t border-dashed border-black/10 pt-1 dark:border-white/15">
       <p className="text-[10px] font-medium uppercase tracking-wide text-black/40 dark:text-white/40">
-        Adjust this month&apos;s due
+        {isPreviousMonth
+          ? "Adjust previous-month due"
+          : "Adjust this month&apos;s due"}
       </p>
       <div className="flex flex-wrap items-center gap-1">
         <form action={action} className="flex flex-wrap items-center gap-1">

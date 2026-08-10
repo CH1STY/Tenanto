@@ -9,6 +9,7 @@ import { logAudit } from "@/lib/audit";
 import { AUDIT_ACTIONS } from "@/lib/constants";
 import { Building } from "@/models/Building";
 import { Unit } from "@/models/Unit";
+import { importBuilding } from "@/lib/building-transfer";
 import {
   buildingCreateSchema,
   buildingUpdateSchema,
@@ -171,6 +172,49 @@ export async function updateBuilding(
 
   revalidatePath("/admin/buildings");
   revalidatePath(`/admin/buildings/${buildingId}`);
+  return OK;
+}
+
+export async function importBuildingFromFile(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  let admin;
+  try {
+    admin = await requireSuperAdmin();
+  } catch {
+    return fail("Not authorized.");
+  }
+
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) {
+    return fail("Choose a building export (.json) file.");
+  }
+  if (file.size > 25_000_000) {
+    return fail("That file is too large (max 25 MB).");
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await file.text());
+  } catch {
+    return fail("That file is not valid JSON.");
+  }
+
+  const result = await importBuilding(parsed, admin.id);
+  if (!result.ok) return fail(result.error);
+
+  await logAudit({
+    action: AUDIT_ACTIONS.CREATE,
+    entity: "Building",
+    entityId: result.buildingId,
+    entityLabel: result.name,
+    buildingId: result.buildingId,
+    actor: { id: admin.id, name: admin.name, role: admin.role },
+    description: `Imported building "${result.name}" from a file.`,
+  });
+
+  revalidatePath("/admin/buildings");
   return OK;
 }
 

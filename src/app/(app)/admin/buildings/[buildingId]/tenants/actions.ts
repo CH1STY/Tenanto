@@ -282,6 +282,17 @@ export async function setTenantActive(formData: FormData) {
   const active = parsed.data.active === "true";
 
   await connectDB();
+
+  const ctxBuildingId = objectIdSchema.safeParse(formData.get("buildingId"));
+  if (!active) {
+    const hasOutstandingDue = await Charge.exists({
+      userId,
+      ...(ctxBuildingId.success ? { buildingId: ctxBuildingId.data } : {}),
+      status: { $ne: CHARGE_STATUS.PAID },
+    });
+    if (hasOutstandingDue) return;
+  }
+
   const tenant = await User.findOne({ _id: userId, role: ROLES.TENANT });
   if (!tenant) return;
 
@@ -322,7 +333,6 @@ export async function setTenantActive(formData: FormData) {
 
   if (buildingId) revalidatePath(`/admin/buildings/${buildingId}/tenants`);
   // Best-effort refresh of the current building tenants page.
-  const ctxBuildingId = objectIdSchema.safeParse(formData.get("buildingId"));
   if (ctxBuildingId.success) {
     revalidatePath(`/admin/buildings/${ctxBuildingId.data}/tenants`);
   }

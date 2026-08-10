@@ -55,8 +55,9 @@ export default async function BuildingDetailPage(props: {
   const currentPeriod =
     periods.find((p) => p.monthYear === nowYm) ?? periods[0] ?? null;
 
-  // Active tenants + names + all their charges, for status and dues.
-  const tenancies = await Tenancy.find({ buildingId, isActive: true }).lean();
+  // All tenancies (active + past) so a detached tenant's unpaid dues still show.
+  const tenancies = await Tenancy.find({ buildingId }).lean();
+  const activeTenancies = tenancies.filter((t) => t.isActive);
   const [users, allCharges] = await Promise.all([
     User.find({ _id: { $in: tenancies.map((t) => t.userId) } }).lean(),
     Charge.find({ tenancyId: { $in: tenancies.map((t) => t._id) } })
@@ -67,7 +68,7 @@ export default async function BuildingDetailPage(props: {
   const userName = new Map(users.map((u) => [String(u._id), u.name]));
 
   // Service-charge status for the current month, one row per active tenant.
-  const scStatus = tenancies
+  const scStatus = activeTenancies
     .map((t) => {
       const sc = currentPeriod
         ? allCharges.find(
@@ -85,10 +86,17 @@ export default async function BuildingDetailPage(props: {
     })
     .sort((a, b) => compareUnitLabels(a.unit, b.unit));
 
-  // Outstanding dues (any month, any category), grouped per tenant.
+  // Outstanding dues (any month, any category), grouped per tenant — including
+  // tenants who have since detached but still owe money.
   const duesByTenancy = new Map<
     string,
-    { unit: string; name: string; total: number; items: typeof allCharges }
+    {
+      unit: string;
+      name: string;
+      isPastTenant: boolean;
+      total: number;
+      items: typeof allCharges;
+    }
   >();
   for (const c of allCharges) {
     if (c.status === CHARGE_STATUS.PAID) continue;
@@ -98,6 +106,7 @@ export default async function BuildingDetailPage(props: {
     const entry = duesByTenancy.get(key) ?? {
       unit: unitLabel.get(String(t.unitId)) ?? "?",
       name: userName.get(String(t.userId)) ?? "Tenant",
+      isPastTenant: !t.isActive,
       total: 0,
       items: [] as typeof allCharges,
     };
@@ -267,6 +276,11 @@ export default async function BuildingDetailPage(props: {
                 <div className="flex items-center justify-between text-sm">
                   <span className="font-medium">
                     {r.unit} · {r.name}
+                    {r.isPastTenant ? (
+                      <span className="ml-1 text-[10px] font-medium uppercase tracking-wide text-black/45 dark:text-white/45">
+                        (Past tenant)
+                      </span>
+                    ) : null}
                   </span>
                   <span className="font-semibold tabular-nums text-red-600 dark:text-red-400">
                     {money(r.total)}

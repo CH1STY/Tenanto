@@ -6,6 +6,7 @@ import {
   updateBuilding,
   createUnit,
   updateUnit,
+  importBuildingFromFile,
   type ActionState,
 } from "./actions";
 
@@ -30,6 +31,35 @@ function Message({ state }: { state: ActionState }) {
     return <p className="text-sm text-green-600 dark:text-green-400">Saved.</p>;
   }
   return null;
+}
+
+export function ImportBuildingForm() {
+  const [state, action, pending] = useActionState(
+    importBuildingFromFile,
+    initial,
+  );
+
+  return (
+    <form action={action} className="flex flex-wrap items-center gap-3">
+      <input
+        type="file"
+        name="file"
+        accept="application/json,.json"
+        required
+        className="text-sm file:mr-3 file:h-9 file:cursor-pointer file:rounded-md file:border file:border-black/15 file:bg-transparent file:px-3 file:text-sm file:font-medium dark:file:border-white/20"
+      />
+      <button type="submit" disabled={pending} className={primaryBtn}>
+        {pending ? "Importing…" : "Import building"}
+      </button>
+      {state.ok ? (
+        <span className="text-sm text-green-600 dark:text-green-400">
+          Building imported.
+        </span>
+      ) : (
+        <Message state={state} />
+      )}
+    </form>
+  );
 }
 
 export function BuildingCreateForm() {

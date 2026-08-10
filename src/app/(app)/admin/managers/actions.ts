@@ -6,13 +6,14 @@ import bcrypt from "bcryptjs";
 import { connectDB } from "@/lib/db";
 import { requireSuperAdmin } from "@/lib/rbac";
 import { logAudit } from "@/lib/audit";
-import { AUDIT_ACTIONS, ROLES } from "@/lib/constants";
+import { AUDIT_ACTIONS, LOGIN_ROLES, ROLES } from "@/lib/constants";
 import { User } from "@/models/User";
 import { Building } from "@/models/Building";
 import {
   managerCreateSchema,
   managerActiveSchema,
   managerBuildingsSchema,
+  managerPasswordSchema,
 } from "@/lib/validators/manager";
 
 export type ActionState = { error: string | null; ok?: boolean };
@@ -168,4 +169,51 @@ export async function setManagerActive(formData: FormData) {
   });
 
   revalidatePath("/admin/managers");
+}
+
+export async function updateAdminPassword(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const actor = await actorOrNull();
+  if (!actor) return fail("Not authorized.");
+
+  const parsed = managerPasswordSchema.safeParse({
+    userId: formData.get("userId"),
+    password: formData.get("password"),
+  });
+  if (!parsed.success)
+    return fail(parsed.error.issues[0]?.message ?? "Invalid input.");
+
+  const { userId, password } = parsed.data;
+
+  await connectDB();
+  const target = await User.findById(userId).select("name email role");
+  if (!target || !LOGIN_ROLES.includes(target.role)) {
+    return fail("Admin not found.");
+  }
+
+  target.passwordHash = await bcrypt.hash(password, 10);
+  target.authVersion = (target.authVersion ?? 0) + 1;
+  await target.save();
+
+  const isSelf = String(target._id) === actor.id;
+  const targetLabel = target.email
+    ? `${target.name} (${target.email})`
+    : target.name;
+
+  await logAudit({
+    action: AUDIT_ACTIONS.UPDATE,
+    entity: "User",
+    entityId: String(target._id),
+    entityLabel: target.name,
+    actor: actorInfo(actor),
+    description: isSelf
+      ? "Updated own password."
+      : `Reset admin password for "${targetLabel}".`,
+    after: { passwordReset: true },
+  });
+
+  revalidatePath("/admin/managers");
+  return OK;
 }

@@ -6,7 +6,7 @@ import { connectDB } from "@/lib/db";
 import { Building } from "@/models/Building";
 import { Unit } from "@/models/Unit";
 import { ConfirmSubmit } from "@/components/confirm-submit";
-import { BuildingCreateForm } from "./forms";
+import { BuildingCreateForm, ImportBuildingForm } from "./forms";
 import { deleteBuilding } from "./actions";
 
 export default async function AdminBuildingsPage() {
@@ -41,6 +41,17 @@ export default async function AdminBuildingsPage() {
           New building
         </h2>
         <BuildingCreateForm />
+      </section>
+
+      <section className="rounded-lg border border-black/10 p-5 dark:border-white/15">
+        <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-black/50 dark:text-white/50">
+          Import a building
+        </h2>
+        <p className="mb-4 text-sm text-black/55 dark:text-white/55">
+          Upload a building export (.json) to recreate it as a new building with
+          all its units, tenants, cash books and dues.
+        </p>
+        <ImportBuildingForm />
       </section>
 
       <section>
@@ -80,6 +91,12 @@ export default async function AdminBuildingsPage() {
                     >
                       Manage
                     </Link>
+                    <a
+                      href={`/admin/buildings/export/${id}`}
+                      className="inline-flex h-9 items-center justify-center rounded-md border border-black/15 px-3 text-sm font-medium hover:bg-black/4 dark:border-white/20 dark:hover:bg-white/10"
+                    >
+                      Export
+                    </a>
                     <form action={deleteBuilding}>
                       <input type="hidden" name="buildingId" value={id} />
                       <ConfirmSubmit

@@ -18,6 +18,8 @@ const UserSchema = new Schema(
     // Login users only (SUPER_ADMIN, MANAGER). Omitted when unused.
     email: { type: String, trim: true, lowercase: true },
     passwordHash: { type: String, default: null, select: false },
+    // Incremented whenever credentials are rotated; old JWTs become invalid.
+    authVersion: { type: Number, default: 0, min: 0 },
     role: {
       type: String,
       enum: Object.values(ROLES),

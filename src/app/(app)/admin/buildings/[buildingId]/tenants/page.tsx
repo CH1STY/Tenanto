@@ -6,6 +6,8 @@ import { Building } from "@/models/Building";
 import { Unit } from "@/models/Unit";
 import { User } from "@/models/User";
 import { Tenancy } from "@/models/Tenancy";
+import { Charge } from "@/models/Charge";
+import { CHARGE_STATUS } from "@/lib/constants";
 import { objectIdSchema } from "@/lib/validators/building";
 import { ConfirmSubmit } from "@/components/confirm-submit";
 import { AssignTenantForm } from "./forms";
@@ -43,6 +45,33 @@ export default async function BuildingTenantsPage(props: {
     }
   }
   const unitLabel = new Map(units.map((u) => [String(u._id), u.label]));
+
+  const dueByUserRows = await Charge.aggregate<{
+    _id: unknown;
+    due: number;
+  }>([
+    {
+      $match: {
+        buildingId: building._id,
+        status: { $ne: CHARGE_STATUS.PAID },
+      },
+    },
+    {
+      $project: {
+        userId: 1,
+        due: { $subtract: ["$amount", "$paidAmount"] },
+      },
+    },
+    {
+      $group: {
+        _id: "$userId",
+        due: { $sum: "$due" },
+      },
+    },
+  ]);
+  const dueByUser = new Map(
+    dueByUserRows.map((r) => [String(r._id), Number(r.due) || 0]),
+  );
 
   // Existing tenants that aren't currently occupying a unit — offered for
   // reuse when assigning, so a returning tenant isn't recreated.
@@ -186,6 +215,8 @@ export default async function BuildingTenantsPage(props: {
                 const currentUnit = active
                   ? unitLabel.get(String(active.unitId))
                   : null;
+                const outstandingDue = dueByUser.get(id) ?? 0;
+                const canDeactivate = t.isActive && outstandingDue <= 0;
                 return (
                   <div
                     key={id}
@@ -205,6 +236,11 @@ export default async function BuildingTenantsPage(props: {
                       </p>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
+                      {outstandingDue > 0 ? (
+                        <span className="text-xs font-medium text-red-600 dark:text-red-400">
+                          Due {outstandingDue.toLocaleString()}
+                        </span>
+                      ) : null}
                       {t.isActive ? (
                         <span className="text-xs text-green-600 dark:text-green-400">
                           Active
@@ -226,13 +262,22 @@ export default async function BuildingTenantsPage(props: {
                           name="active"
                           value={t.isActive ? "false" : "true"}
                         />
-                        {t.isActive ? (
+                        {canDeactivate ? (
                           <ConfirmSubmit
                             message={`Deactivate ${t.name}? This also vacates their unit if occupied.`}
                             className="inline-flex h-7 items-center justify-center rounded-md border border-red-500/40 px-2.5 text-xs font-medium text-red-600 hover:bg-red-500/10 dark:text-red-400"
                           >
                             Deactivate
                           </ConfirmSubmit>
+                        ) : t.isActive ? (
+                          <button
+                            type="button"
+                            disabled
+                            title="Tenant has outstanding due and cannot be deactivated."
+                            className="inline-flex h-7 items-center justify-center rounded-md border border-black/15 px-2.5 text-xs font-medium text-black/40 opacity-70 dark:border-white/20 dark:text-white/40"
+                          >
+                            Due pending
+                          </button>
                         ) : (
                           <button
                             type="submit"
