@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { getCurrentUser } from "@/lib/rbac";
+import { getCurrentUser, userManagesBuilding } from "@/lib/rbac";
 import { ROLES, CHARGE_CATEGORY, CHARGE_STATUS } from "@/lib/constants";
 import { connectDB } from "@/lib/db";
 import { Building } from "@/models/Building";
@@ -28,7 +28,6 @@ export default async function TenantProfilePage(props: {
 }) {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  if (user.role !== ROLES.SUPER_ADMIN) redirect("/dashboard");
 
   const { buildingId, tenantId } = await props.params;
   if (
@@ -37,6 +36,7 @@ export default async function TenantProfilePage(props: {
   ) {
     notFound();
   }
+  if (!(await userManagesBuilding(buildingId, user))) redirect("/dashboard");
 
   await connectDB();
   const building = await Building.findById(buildingId).lean();

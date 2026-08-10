@@ -13,9 +13,9 @@ export default async function AppLayout({ children }: LayoutProps<"/">) {
 
   return (
     <div className="flex min-h-full flex-1 flex-col">
-      <header className="border-b border-black/10 dark:border-white/15">
+      <header className="no-print border-b border-black/10 dark:border-white/15">
         <div className="mx-auto flex h-14 w-full max-w-6xl items-center justify-between gap-3 px-4 sm:px-6">
-          <nav className="flex min-w-0 items-center gap-3 overflow-x-auto sm:gap-6">
+          <nav className="flex min-w-0 items-center gap-3 overflow-x-auto sm:gap-5">
             <Link
               href="/dashboard"
               className="shrink-0 text-sm font-bold tracking-tight"
@@ -38,12 +38,26 @@ export default async function AppLayout({ children }: LayoutProps<"/">) {
             ) : null}
             {isSuperAdmin ? (
               <Link
+                href="/admin/managers"
+                className="shrink-0 whitespace-nowrap text-sm text-black/60 hover:text-foreground dark:text-white/60"
+              >
+                Admins
+              </Link>
+            ) : null}
+            {isSuperAdmin ? (
+              <Link
                 href="/admin/audit-logs"
                 className="shrink-0 whitespace-nowrap text-sm text-black/60 hover:text-foreground dark:text-white/60"
               >
                 Audit logs
               </Link>
             ) : null}
+            <Link
+              href="/buildings"
+              className="shrink-0 whitespace-nowrap text-sm text-black/60 hover:text-foreground dark:text-white/60"
+            >
+              Public view
+            </Link>
           </nav>
 
           <div className="flex shrink-0 items-center gap-2 sm:gap-4">

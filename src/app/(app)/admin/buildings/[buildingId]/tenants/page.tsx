@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { getCurrentUser } from "@/lib/rbac";
-import { ROLES } from "@/lib/constants";
+import { getCurrentUser, userManagesBuilding } from "@/lib/rbac";
 import { connectDB } from "@/lib/db";
 import { Building } from "@/models/Building";
 import { Unit } from "@/models/Unit";
@@ -17,10 +16,10 @@ export default async function BuildingTenantsPage(props: {
 }) {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  if (user.role !== ROLES.SUPER_ADMIN) redirect("/dashboard");
 
   const { buildingId } = await props.params;
   if (!objectIdSchema.safeParse(buildingId).success) notFound();
+  if (!(await userManagesBuilding(buildingId, user))) redirect("/dashboard");
 
   await connectDB();
   const building = await Building.findById(buildingId).lean();

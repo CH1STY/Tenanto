@@ -1,4 +1,6 @@
 import { auth } from "@/auth";
+import { connectDB } from "@/lib/db";
+import { User } from "@/models/User";
 import { ROLES, type Role } from "@/lib/constants";
 
 export type SessionUser = {
@@ -37,4 +39,23 @@ export async function requireRole(...allowed: Role[]): Promise<SessionUser> {
 /** Throws unless the signed-in user is a SuperAdmin. */
 export async function requireSuperAdmin(): Promise<SessionUser> {
   return requireRole(ROLES.SUPER_ADMIN);
+}
+
+/**
+ * True if the user may manage this building: SuperAdmins always, Managers only
+ * for buildings they've been assigned. Pass `user` to avoid re-reading the session.
+ */
+export async function userManagesBuilding(
+  buildingId: string,
+  user?: SessionUser | null,
+): Promise<boolean> {
+  const u = user ?? (await getCurrentUser());
+  if (!u) return false;
+  if (u.role === ROLES.SUPER_ADMIN) return true;
+  if (u.role !== ROLES.MANAGER) return false;
+
+  await connectDB();
+  const doc = await User.findById(u.id).select("managedBuildingIds").lean();
+  const ids = (doc?.managedBuildingIds ?? []).map((id) => String(id));
+  return ids.includes(buildingId);
 }

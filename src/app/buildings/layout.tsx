@@ -28,7 +28,7 @@ export default async function BuildingsLayout({
 
   return (
     <div className="flex min-h-full flex-1 flex-col">
-      <header className="border-b border-black/10 dark:border-white/15">
+      <header className="no-print border-b border-black/10 dark:border-white/15">
         <div className="mx-auto flex h-14 w-full max-w-6xl items-center justify-between gap-3 px-4 sm:px-6">
           <nav className="flex min-w-0 items-center gap-3 overflow-x-auto sm:gap-6">
             <Link

@@ -30,6 +30,12 @@ const UserSchema = new Schema(
       ref: "Building",
       default: null,
     },
+    // Buildings a MANAGER is allowed to manage (SuperAdmin-assigned).
+    managedBuildingIds: {
+      type: [Schema.Types.ObjectId],
+      ref: "Building",
+      default: [],
+    },
   },
   { timestamps: true },
 );

@@ -25,12 +25,7 @@ export const payChargeSchema = z.object({
 export const incomeSchema = z.object({
   buildingId: objectIdSchema,
   monthYear,
-  source: z.enum([
-    "ROOFTOP_RENT",
-    "ROOFTOP_ELECTRICITY",
-    "CHARITY",
-    "OTHER",
-  ]),
+  source: z.enum(["ROOFTOP_RENT", "ROOFTOP_ELECTRICITY", "CHARITY", "OTHER"]),
   description: z.string().trim().min(1, "Description is required.").max(200),
   amount: positiveMoney,
 });
@@ -52,7 +47,43 @@ export const withdrawalSchema = z.object({
   note: z.string().trim().max(200).optional(),
 });
 
+export const addChargeSchema = z.object({
+  buildingId: objectIdSchema,
+  monthYear,
+  tenancyId: objectIdSchema,
+  category: z.enum(["BILL", "PREVIOUS_DUE"]),
+  description: z.string().trim().min(1, "Description is required.").max(200),
+  amount: positiveMoney,
+});
+
+export const editChargeSchema = z.object({
+  buildingId: objectIdSchema,
+  monthYear,
+  chargeId: objectIdSchema,
+  description: z.string().trim().min(1, "Description is required.").max(200),
+  amount: positiveMoney,
+});
+
+export const chargeRefSchema = z.object({
+  buildingId: objectIdSchema,
+  monthYear,
+  chargeId: objectIdSchema,
+});
+
 export const closeMonthSchema = z.object({
   buildingId: objectIdSchema,
   monthYear,
+});
+
+export const monthNoteSchema = z.object({
+  buildingId: objectIdSchema,
+  monthYear,
+  note: z.string().trim().max(1000).optional(),
+});
+
+/** Identifies a single ledger entry (income, expense, withdrawal, payment). */
+export const ledgerEntrySchema = z.object({
+  buildingId: objectIdSchema,
+  monthYear,
+  id: objectIdSchema,
 });

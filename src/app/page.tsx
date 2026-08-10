@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/rbac";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { connectDB } from "@/lib/db";
@@ -19,6 +20,10 @@ export default async function Home() {
     getCurrentUser(),
     getActiveBuilding(),
   ]);
+
+  // Public visitors with an active building go straight to it; only the
+  // "All buildings" page shows the full list.
+  if (!user && activeBuilding) redirect(`/buildings/${activeBuilding.id}`);
 
   return (
     <main className="relative flex flex-1 flex-col items-center justify-center px-6 py-16">

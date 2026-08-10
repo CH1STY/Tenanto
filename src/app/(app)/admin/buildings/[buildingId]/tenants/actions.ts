@@ -4,7 +4,11 @@ import mongoose from "mongoose";
 import { revalidatePath } from "next/cache";
 
 import { connectDB } from "@/lib/db";
-import { requireRole, requireSuperAdmin } from "@/lib/rbac";
+import {
+  requireRole,
+  requireSuperAdmin,
+  userManagesBuilding,
+} from "@/lib/rbac";
 import { logAudit } from "@/lib/audit";
 import {
   ROLES,
@@ -76,6 +80,9 @@ export async function placeTenant(
     parsed.data;
 
   await connectDB();
+
+  if (!(await userManagesBuilding(buildingId)))
+    return fail("You do not manage this building.");
 
   const unit = await Unit.findOne({ _id: unitId, buildingId })
     .select("label")
@@ -234,6 +241,7 @@ export async function vacateUnit(formData: FormData) {
   await connectDB();
   const tenancy = await Tenancy.findOne({ unitId, isActive: true });
   if (!tenancy) return;
+  if (!(await userManagesBuilding(String(tenancy.buildingId)))) return;
 
   const [unit, tenant] = await Promise.all([
     Unit.findById(unitId).select("label").lean(),
@@ -352,6 +360,9 @@ export async function addManualCharge(
 
   await connectDB();
 
+  if (!(await userManagesBuilding(buildingId)))
+    return fail("You do not manage this building.");
+
   const tenant = await User.findOne({ _id: userId, role: ROLES.TENANT })
     .select("name")
     .lean();
@@ -421,6 +432,9 @@ export async function payTenantCharge(
   const { buildingId, monthYear, chargeId, amount } = parsed.data;
 
   await connectDB();
+
+  if (!(await userManagesBuilding(buildingId)))
+    return fail("You do not manage this building.");
 
   const period = await MonthlyPeriod.findOne({ buildingId, monthYear });
   if (!period) {

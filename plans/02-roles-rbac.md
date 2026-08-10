@@ -24,7 +24,7 @@ A single `role` field on the `User` document drives all access control.
 | Add tenant to unit                  |     ✅      |   ✅    |   ❌   |
 | Activate / deactivate tenant        |     ✅      |   ❌    |   ❌   |
 | Reassign unit to new tenant         |     ✅      |   ✅    |   ❌   |
-| Open / close a month                |     ✅      |   ✅    |   ❌   |
+| Open / close a month                |     ✅      |   ❌    |   ❌   |
 | Record tenant payments              |     ✅      |   ✅    |   ❌   |
 | Record income (rooftop, charity…)   |     ✅      |   ✅    |   ❌   |
 | Record expenses (with voucher)      |     ✅      |   ✅    |   ❌   |
@@ -33,8 +33,8 @@ A single `role` field on the `User` document drives all access control.
 | View building dashboard / cash book |     ✅      |   ✅    |   ❌   |
 
 > Note: SuperAdmin owns structural/identity actions (buildings, units, managers,
-> roles, activation). Managers run day-to-day finance: months, payments, income,
-> expenses, and withdrawals. Adjust during build if needed.
+> roles, activation) plus opening/closing months. Managers run day-to-day finance:
+> payments, income, expenses, and withdrawals. Adjust during build if needed.
 
 ## Promote / demote flow (SuperAdmin only)
 

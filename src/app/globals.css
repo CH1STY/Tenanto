@@ -25,3 +25,34 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Print: hide interactive chrome and render the cash book like the paper sheet. */
+.print-only {
+  display: none;
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  .print-only {
+    display: block !important;
+  }
+  .print-avoid-break {
+    break-inside: avoid;
+  }
+  /* Force light, ink-friendly output regardless of theme. */
+  :root,
+  .dark {
+    --background: #ffffff;
+    --foreground: #000000;
+  }
+  body {
+    background: #ffffff;
+    color: #000000;
+  }
+  @page {
+    size: landscape;
+    margin: 1.2cm;
+  }
+}

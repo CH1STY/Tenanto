@@ -16,28 +16,29 @@ export default async function DashboardPage() {
       <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {isSuperAdmin ? (
           <Card
+            href="/admin/buildings"
+            title="Buildings"
+            body="Create buildings and configure their floors and units."
+          />
+        ) : null}
+        {isSuperAdmin ? (
+          <Card
+            href="/admin/managers"
+            title="Admins"
+            body="Add admins, grant access to specific buildings, and deactivate them."
+          />
+        ) : null}
+        {isSuperAdmin ? (
+          <Card
             href="/admin/audit-logs"
             title="Audit logs"
             body="Review every create, edit and delete across the system, filtered by date."
           />
         ) : null}
-        {isSuperAdmin ? (
-          <Card
-            href="/admin/buildings"
-            title="Buildings"
-            body="Create buildings and configure their floors and units."
-          />
-        ) : (
-          <Card
-            title="Buildings"
-            body="Building, floor and unit management."
-            disabled
-          />
-        )}
         <Card
-          title="Monthly cash book"
-          body="Open a month, record payments, expenses and withdrawals — coming next."
-          disabled
+          href="/buildings"
+          title="Buildings & cash book"
+          body="Browse buildings and view each month's cash book, dues and balances."
         />
       </div>
     </div>

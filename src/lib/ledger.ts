@@ -4,7 +4,8 @@ import { Payment } from "@/models/Payment";
 import { Income } from "@/models/Income";
 import { Expense } from "@/models/Expense";
 import { Withdrawal } from "@/models/Withdrawal";
-import { EXPENSE_STATUS } from "@/lib/constants";
+import { MonthlyPeriod } from "@/models/MonthlyPeriod";
+import { EXPENSE_STATUS, PERIOD_STATUS } from "@/lib/constants";
 
 export type PeriodTotals = {
   payments: number;
@@ -18,7 +19,7 @@ const first = (rows: { s: number }[]) => rows[0]?.s ?? 0;
 /** Money totals for a building's month, used for the cash book and closing. */
 export async function getPeriodTotals(
   buildingId: string,
-  monthYear: string
+  monthYear: string,
 ): Promise<PeriodTotals> {
   await connectDB();
   const buildingObjectId = new Types.ObjectId(buildingId);
@@ -54,4 +55,30 @@ export async function getPeriodTotals(
 /** Cash in hand at month end = opening + receipts − paid expenses − withdrawals. */
 export function computeClosing(opening: number, t: PeriodTotals): number {
   return opening + t.payments + t.income - t.expensesPaid - t.withdrawals;
+}
+
+/**
+ * Cascade the cash-in-hand chain to every month after `fromMonthYear`, so
+ * reopening/closing a previous month keeps later openings and closings correct.
+ */
+export async function recalcForwardChain(
+  buildingId: string,
+  fromMonthYear: string,
+  fromClosingBalance: number,
+): Promise<void> {
+  await connectDB();
+  const later = await MonthlyPeriod.find({
+    buildingId,
+    monthYear: { $gt: fromMonthYear },
+  }).sort({ monthYear: 1 });
+
+  let prevClosing = fromClosingBalance;
+  for (const p of later) {
+    const totals = await getPeriodTotals(buildingId, p.monthYear);
+    p.openingBalance = prevClosing;
+    const projected = computeClosing(prevClosing, totals);
+    if (p.status === PERIOD_STATUS.CLOSED) p.closingBalance = projected;
+    prevClosing = projected;
+    await p.save();
+  }
 }
