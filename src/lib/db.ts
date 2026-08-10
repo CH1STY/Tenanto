@@ -31,9 +31,28 @@ export async function connectDB(): Promise<typeof mongoose> {
 
   if (!cache.promise) {
     mongoose.set("strictQuery", true);
-    cache.promise = mongoose.connect(MONGODB_URI as string, {
-      bufferCommands: false,
-    });
+    cache.promise = mongoose
+      .connect(MONGODB_URI as string, {
+        bufferCommands: false,
+      })
+      .catch((error: unknown) => {
+        cache.promise = null;
+
+        if (
+          error &&
+          typeof error === "object" &&
+          "code" in error &&
+          (error as { code?: string }).code === "ECONNREFUSED" &&
+          "syscall" in error &&
+          (error as { syscall?: string }).syscall === "querySrv"
+        ) {
+          throw new Error(
+            "MongoDB SRV DNS lookup failed. If you are running locally, set MONGODB_URI to mongodb://127.0.0.1:27017/tenant_app?directConnection=true&replicaSet=rs0 and run `npm run db:up`.",
+          );
+        }
+
+        throw error;
+      });
   }
 
   cache.conn = await cache.promise;

@@ -21,9 +21,19 @@ export default async function Home() {
     getActiveBuilding(),
   ]);
 
-  // Public visitors with an active building go straight to it; only the
-  // "All buildings" page shows the full list.
-  if (!user && activeBuilding) redirect(`/buildings/${activeBuilding.id}`);
+  // Home acts as an entrypoint: always open the visitor's active building.
+  if (activeBuilding) redirect(`/buildings/${activeBuilding.id}`);
+
+  await connectDB();
+  const firstBuilding = await Building.findOne()
+    .sort({ name: 1 })
+    .select("_id")
+    .lean();
+
+  // First-time visitors get auto-assigned to the first building.
+  if (firstBuilding?._id) {
+    redirect(`/buildings/set-active/${String(firstBuilding._id)}`);
+  }
 
   return (
     <main className="relative flex flex-1 flex-col items-center justify-center px-6 py-16">
@@ -46,14 +56,10 @@ export default async function Home() {
 
         <div className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row">
           <Link
-            href={
-              activeBuilding ? `/buildings/${activeBuilding.id}` : "/buildings"
-            }
+            href="/buildings"
             className="inline-flex h-11 items-center justify-center rounded-md bg-foreground px-6 text-sm font-medium text-background transition-opacity hover:opacity-90"
           >
-            {activeBuilding
-              ? `View ${activeBuilding.name}`
-              : "Browse buildings"}
+            Browse buildings
           </Link>
           {user ? (
             <Link
@@ -71,19 +77,6 @@ export default async function Home() {
             </Link>
           )}
         </div>
-
-        {activeBuilding ? (
-          <p className="mt-4 text-xs text-black/50 dark:text-white/50">
-            Your active building is{" "}
-            <span className="font-medium text-foreground">
-              {activeBuilding.name}
-            </span>
-            .{" "}
-            <Link href="/buildings" className="underline hover:no-underline">
-              Change
-            </Link>
-          </p>
-        ) : null}
 
         <dl className="mt-16 grid grid-cols-1 gap-6 text-left sm:grid-cols-3">
           <Feature
