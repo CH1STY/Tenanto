@@ -84,15 +84,32 @@ export async function resolveMonthRoster(
   const monthTenancyIds = new Set(tenancyIds);
 
   if (options?.includeOutstanding) {
-    // Surface anyone who still owes — including tenants who have since
-    // detached — so their dues stay visible and collectable on the cash book.
-    const owing = await Charge.find({
+    // Surface anyone who still owed **as of this month** — including tenants
+    // who have since detached, paid off later, or had the due adjusted in a
+    // later month — so every month faithfully keeps its outstanding tenants
+    // regardless of what happened afterwards. Also surface anyone whose due
+    // was adjusted *in* this month, so that edit stays visible on the month it
+    // was made even when it cleared the charge to zero.
+    const asOfCharges = await Charge.find({
       buildingId,
-      status: { $ne: CHARGE_STATUS.PAID },
+      monthYear: { $lte: monthYear },
     })
-      .select("tenancyId")
+      .select("tenancyId amount description adjustments")
       .lean();
-    for (const c of owing) tenancyIds.add(String(c.tenancyId));
+    const paidAsOf = await paidByChargeAsOf(buildingId, monthYear);
+    for (const c of asOfCharges) {
+      const adjustedThisMonth = (c.adjustments ?? []).some(
+        (a) => a.monthYear === monthYear,
+      );
+      const { amount } = chargeAmountAsOf(c, monthYear);
+      const paid = Math.min(
+        amount,
+        Math.max(0, paidAsOf.get(String(c._id)) ?? 0),
+      );
+      if (amount - paid > 0 || adjustedThisMonth) {
+        tenancyIds.add(String(c.tenancyId));
+      }
+    }
   }
 
   const ids = [...tenancyIds];
@@ -187,6 +204,42 @@ export function chargeStateAsOf(
           ? CHARGE_STATUS.PAID
           : CHARGE_STATUS.PARTIAL,
   };
+}
+
+type ChargeAdjustment = {
+  monthYear: string;
+  amount: number;
+  description: string;
+  prevAmount: number;
+  prevDescription: string;
+  at?: Date | string | null;
+};
+
+/**
+ * A charge's amount and description **as of** a month. Each adjustment is logged
+ * with the month it was made in and takes effect from that month onward, so a
+ * later edit never rewrites how a past month reads. Months before the first
+ * edit show the original (pre-adjustment) values.
+ */
+export function chargeAmountAsOf(
+  c: {
+    amount: number;
+    description: string;
+    adjustments?: ChargeAdjustment[] | null;
+  },
+  monthYear: string,
+): { amount: number; description: string } {
+  const log = c.adjustments ?? [];
+  if (log.length === 0) return { amount: c.amount, description: c.description };
+  const byTime = (a: ChargeAdjustment, b: ChargeAdjustment) =>
+    +new Date(a.at ?? 0) - +new Date(b.at ?? 0);
+  const applied = log.filter((a) => a.monthYear <= monthYear).sort(byTime);
+  if (applied.length > 0) {
+    const last = applied[applied.length - 1];
+    return { amount: last.amount, description: last.description };
+  }
+  const first = [...log].sort(byTime)[0];
+  return { amount: first.prevAmount, description: first.prevDescription };
 }
 
 type MonthLog = { amount: number; monthYear: string };
@@ -288,10 +341,33 @@ function owedAsOfExpr(
   };
 }
 
+// Mongo $expr: the entity has at least one `logField` entry recorded **in**
+// `monthYear` — i.e. it was paid/returned against this month — so a carried
+// payable settled this month stays visible (and undoable) on the month the
+// cash actually moved, even once it's fully cleared.
+function activityInMonthExpr(monthYear: string, logField: string) {
+  return {
+    $gt: [
+      {
+        $size: {
+          $filter: {
+            input: { $ifNull: [`$${logField}`, []] },
+            as: "e",
+            cond: { $eq: ["$$e.monthYear", monthYear] },
+          },
+        },
+      },
+      0,
+    ],
+  };
+}
+
 /**
  * Query for a building's expenses shown in a month: this month's plus any
- * carried payable still owed **as of** this month. A prior bill settled later
- * no longer leaks into an earlier month, and legacy paid rows never carry.
+ * carried payable still owed **as of** this month, or one that was paid against
+ * this month (so a due cleared now stays visible to review or undo). A prior
+ * bill settled in another month no longer leaks in, and legacy paid rows with
+ * no payment log never carry.
  */
 export function expenseMonthQuery(buildingId: string, monthYear: string) {
   return {
@@ -300,18 +376,27 @@ export function expenseMonthQuery(buildingId: string, monthYear: string) {
       { monthYear },
       {
         monthYear: { $lt: monthYear },
-        $expr: owedAsOfExpr(
-          monthYear,
-          "payments",
-          "paidAmount",
-          EXPENSE_STATUS.PAID,
-        ),
+        $expr: {
+          $or: [
+            owedAsOfExpr(
+              monthYear,
+              "payments",
+              "paidAmount",
+              EXPENSE_STATUS.PAID,
+            ),
+            activityInMonthExpr(monthYear, "payments"),
+          ],
+        },
       },
     ],
   };
 }
 
-/** Query for a month's withdrawals: this month's plus advances still out as of it. */
+/**
+ * Query for a month's withdrawals: this month's plus advances still out as of
+ * it, or ones returned against this month (so a repayment made now stays
+ * visible to review or undo even once fully returned).
+ */
 export function withdrawalMonthQuery(buildingId: string, monthYear: string) {
   return {
     buildingId,
@@ -319,7 +404,12 @@ export function withdrawalMonthQuery(buildingId: string, monthYear: string) {
       { monthYear },
       {
         monthYear: { $lt: monthYear },
-        $expr: owedAsOfExpr(monthYear, "returns", "returnedAmount", null),
+        $expr: {
+          $or: [
+            owedAsOfExpr(monthYear, "returns", "returnedAmount", null),
+            activityInMonthExpr(monthYear, "returns"),
+          ],
+        },
       },
     ],
   };

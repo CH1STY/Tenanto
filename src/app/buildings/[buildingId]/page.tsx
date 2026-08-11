@@ -7,10 +7,16 @@ import { User } from "@/models/User";
 import { Tenancy } from "@/models/Tenancy";
 import { MonthlyPeriod } from "@/models/MonthlyPeriod";
 import { Charge } from "@/models/Charge";
+import { Expense } from "@/models/Expense";
+import { Withdrawal } from "@/models/Withdrawal";
 import { getActiveBuildingId } from "@/lib/active-building";
 import { userManagesBuilding } from "@/lib/rbac";
 import { objectIdSchema } from "@/lib/validators/building";
-import { CHARGE_CATEGORY, CHARGE_STATUS } from "@/lib/constants";
+import {
+  CHARGE_CATEGORY,
+  CHARGE_STATUS,
+  EXPENSE_STATUS,
+} from "@/lib/constants";
 import { monthLabel, currentMonthYear } from "@/lib/dates";
 import { compareUnitLabels } from "@/lib/units";
 import { setActiveBuilding } from "../actions";
@@ -58,11 +64,13 @@ export default async function BuildingDetailPage(props: {
   // All tenancies (active + past) so a detached tenant's unpaid dues still show.
   const tenancies = await Tenancy.find({ buildingId }).lean();
   const activeTenancies = tenancies.filter((t) => t.isActive);
-  const [users, allCharges] = await Promise.all([
+  const [users, allCharges, allExpenses, allWithdrawals] = await Promise.all([
     User.find({ _id: { $in: tenancies.map((t) => t.userId) } }).lean(),
     Charge.find({ tenancyId: { $in: tenancies.map((t) => t._id) } })
       .sort({ monthYear: 1 })
       .lean(),
+    Expense.find({ buildingId }).sort({ monthYear: 1, voucherNo: 1 }).lean(),
+    Withdrawal.find({ buildingId }).sort({ monthYear: 1, takenAt: 1 }).lean(),
   ]);
   const unitLabel = new Map(units.map((u) => [String(u._id), u.label]));
   const userName = new Map(users.map((u) => [String(u._id), u.name]));
@@ -118,6 +126,46 @@ export default async function BuildingDetailPage(props: {
     compareUnitLabels(a.unit, b.unit),
   );
   const totalDue = dueRows.reduce((s, r) => s + r.total, 0);
+
+  // Outstanding building expenses (payables not fully settled) + their history.
+  const dueExpenses = allExpenses
+    .filter(
+      (e) => e.status !== EXPENSE_STATUS.PAID && e.amount - e.paidAmount > 0,
+    )
+    .map((e) => ({
+      id: String(e._id),
+      voucherNo: e.voucherNo,
+      description: e.description,
+      monthYear: e.monthYear,
+      amount: e.amount,
+      paidAmount: e.paidAmount,
+      outstanding: e.amount - e.paidAmount,
+      payments: (e.payments ?? []).map((p) => ({
+        amount: p.amount,
+        monthYear: p.monthYear,
+      })),
+    }));
+  const totalDueExpenses = dueExpenses.reduce((s, e) => s + e.outstanding, 0);
+
+  // All withdrawals with their repayment (return) history.
+  const withdrawalRows = allWithdrawals.map((w) => ({
+    id: String(w._id),
+    takenBy: w.takenBy,
+    note: w.note ?? null,
+    monthYear: w.monthYear,
+    amount: w.amount,
+    returnedAmount: w.returnedAmount,
+    outstanding: w.amount - w.returnedAmount,
+    returns: (w.returns ?? []).map((r) => ({
+      amount: r.amount,
+      monthYear: r.monthYear,
+    })),
+  }));
+  const totalWithdrawn = withdrawalRows.reduce((s, w) => s + w.amount, 0);
+  const totalWithdrawalOutstanding = withdrawalRows.reduce(
+    (s, w) => s + w.outstanding,
+    0,
+  );
 
   // Group units by floor for display.
   const floors = new Map<number, typeof units>();
@@ -304,6 +352,148 @@ export default async function BuildingDetailPage(props: {
                     </li>
                   ))}
                 </ul>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Due expenses (building payables) */}
+      <section className="mt-8 no-print">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-black/50 dark:text-white/50">
+            Due expenses
+          </h2>
+          {totalDueExpenses > 0 ? (
+            <span className="text-xs font-medium text-red-600 dark:text-red-400">
+              Total {money(totalDueExpenses)}
+            </span>
+          ) : null}
+        </div>
+
+        {dueExpenses.length === 0 ? (
+          <p className="mt-3 text-sm text-black/55 dark:text-white/55">
+            No due expenses. All payables are settled.
+          </p>
+        ) : (
+          <div className="mt-4 space-y-3">
+            {dueExpenses.map((e) => (
+              <div
+                key={e.id}
+                className="rounded-lg border border-black/10 p-4 dark:border-white/15"
+              >
+                <div className="flex items-center justify-between text-sm">
+                  <span className="font-medium">
+                    {e.description}{" "}
+                    <span className="text-black/40 dark:text-white/40">
+                      (V#{e.voucherNo} · {monthLabel(e.monthYear)})
+                    </span>
+                  </span>
+                  <span className="font-semibold tabular-nums text-red-600 dark:text-red-400">
+                    {money(e.outstanding)}
+                  </span>
+                </div>
+                <div className="mt-1 text-xs text-black/50 dark:text-white/50">
+                  Total {money(e.amount)}
+                  {e.paidAmount > 0 ? ` · Paid ${money(e.paidAmount)}` : ""}
+                </div>
+                {e.payments.length > 0 ? (
+                  <ul className="mt-2 space-y-1">
+                    {e.payments.map((p, i) => (
+                      <li
+                        key={i}
+                        className="flex items-center justify-between text-xs text-black/60 dark:text-white/60"
+                      >
+                        <span className="text-black/40 dark:text-white/40">
+                          Paid ({monthLabel(p.monthYear)})
+                        </span>
+                        <span className="tabular-nums text-green-600 dark:text-green-400">
+                          {money(p.amount)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Withdrawals + repayment history */}
+      <section className="mt-8 no-print">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-black/50 dark:text-white/50">
+            Withdrawals
+          </h2>
+          {totalWithdrawn > 0 ? (
+            <span className="text-xs text-black/50 dark:text-white/50">
+              Withdrawn {money(totalWithdrawn)}
+              {totalWithdrawalOutstanding > 0 ? (
+                <span className="ml-1 font-medium text-red-600 dark:text-red-400">
+                  · Pending {money(totalWithdrawalOutstanding)}
+                </span>
+              ) : null}
+            </span>
+          ) : null}
+        </div>
+
+        {withdrawalRows.length === 0 ? (
+          <p className="mt-3 text-sm text-black/55 dark:text-white/55">
+            No withdrawals recorded.
+          </p>
+        ) : (
+          <div className="mt-4 space-y-3">
+            {withdrawalRows.map((w) => (
+              <div
+                key={w.id}
+                className="rounded-lg border border-black/10 p-4 dark:border-white/15"
+              >
+                <div className="flex items-center justify-between text-sm">
+                  <span className="font-medium">
+                    {w.takenBy}{" "}
+                    <span className="text-black/40 dark:text-white/40">
+                      ({monthLabel(w.monthYear)})
+                    </span>
+                  </span>
+                  <span className="font-semibold tabular-nums">
+                    {money(w.amount)}
+                  </span>
+                </div>
+                <div className="mt-1 text-xs">
+                  {w.outstanding > 0 ? (
+                    <span className="text-red-600 dark:text-red-400">
+                      Pending {money(w.outstanding)}
+                    </span>
+                  ) : (
+                    <span className="text-green-600 dark:text-green-400">
+                      Fully returned
+                    </span>
+                  )}
+                  {w.note ? (
+                    <span className="text-black/50 dark:text-white/50">
+                      {" · "}
+                      {w.note}
+                    </span>
+                  ) : null}
+                </div>
+                {w.returns.length > 0 ? (
+                  <ul className="mt-2 space-y-1">
+                    {w.returns.map((r, i) => (
+                      <li
+                        key={i}
+                        className="flex items-center justify-between text-xs text-black/60 dark:text-white/60"
+                      >
+                        <span className="text-black/40 dark:text-white/40">
+                          Returned ({monthLabel(r.monthYear)})
+                        </span>
+                        <span className="tabular-nums text-green-600 dark:text-green-400">
+                          {money(r.amount)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
               </div>
             ))}
           </div>

@@ -13,6 +13,7 @@ import {
   resolveMonthRoster,
   paidByChargeAsOf,
   chargeStateAsOf,
+  chargeAmountAsOf,
   expenseMonthQuery,
   withdrawalMonthQuery,
   expensePaidAsOf,
@@ -24,7 +25,6 @@ import {
   CHARGE_CATEGORY,
   CHARGE_STATUS,
   EXPENSE_STATUS,
-  PERIOD_STATUS,
 } from "@/lib/constants";
 import { objectIdSchema } from "@/lib/validators/building";
 import type { CashBookData } from "./cashbook";
@@ -42,15 +42,17 @@ export async function loadCashBook(
   const period = await MonthlyPeriod.findOne({ buildingId, monthYear }).lean();
   if (!period) return null;
 
-  // The month's tenant roster: its immutable open-time snapshot when present.
-  // On an open month also include anyone who still owes, even if they've
-  // detached, so their dues remain visible for collection.
+  // The month's tenant roster: its immutable open-time snapshot when present,
+  // plus anyone who still owed as of this month (even if they've since detached
+  // or paid off later) and anyone whose due was adjusted this month, so each
+  // month keeps its outstanding tenants and edits visible on the month they
+  // happened — open or closed.
   const roster = await resolveMonthRoster(
     buildingId,
     monthYear,
     period.roster,
     {
-      includeOutstanding: period.status === PERIOD_STATUS.OPEN,
+      includeOutstanding: true,
     },
   );
   const tenancyIds = roster.map((r) => r.tenancyId);
@@ -92,11 +94,22 @@ export async function loadCashBook(
     paidByChargeAsOf(buildingId, monthYear),
   ]);
 
-  // Settle each charge only with payments received up to this month, so a due
-  // paid in a later month still reads as outstanding in this month's snapshot.
+  // Settle each charge only with payments received up to this month, and read
+  // its amount/description as of this month, so a later edit or a due paid in a
+  // later month never rewrites this month's snapshot.
   const charges = rawCharges.map((c) => {
-    const state = chargeStateAsOf(c.amount, paidAsOf.get(String(c._id)) ?? 0);
-    return { ...c, paidAmount: state.paidAmount, status: state.status };
+    const asOf = chargeAmountAsOf(c, monthYear);
+    const state = chargeStateAsOf(
+      asOf.amount,
+      paidAsOf.get(String(c._id)) ?? 0,
+    );
+    return {
+      ...c,
+      amount: asOf.amount,
+      description: asOf.description,
+      paidAmount: state.paidAmount,
+      status: state.status,
+    };
   });
 
   const prevNote = prevPeriod?.note?.trim() ? prevPeriod.note.trim() : null;
@@ -121,7 +134,12 @@ export async function loadCashBook(
       c.monthYear === monthYear &&
       c.category === CHARGE_CATEGORY.SERVICE_CHARGE;
     const isOutstanding = c.status !== CHARGE_STATUS.PAID;
-    if (!isThisMonthSC && !isOutstanding) continue;
+    // Keep a cleared due visible on the month its amount was adjusted so the
+    // edit (e.g. a cancellation) is documented even at zero remaining.
+    const adjustedThisMonth = (c.adjustments ?? []).some(
+      (a) => a.monthYear === monthYear,
+    );
+    if (!isThisMonthSC && !isOutstanding && !adjustedThisMonth) continue;
     const key = String(c.tenancyId);
     const list = chargesByTenancy.get(key) ?? [];
     list.push(c);
@@ -142,6 +160,14 @@ export async function loadCashBook(
         fromOtherMonth: c.monthYear !== monthYear,
         paidAmount: c.paidAmount,
         amount: c.amount,
+        adjustments: (c.adjustments ?? [])
+          .filter((a) => a.monthYear <= monthYear)
+          .map((a) => ({
+            prevAmount: a.prevAmount,
+            amount: a.amount,
+            monthYear: a.monthYear,
+            by: a.by ?? null,
+          })),
       })),
     }))
     .sort((a, b) =>
@@ -192,6 +218,9 @@ export async function loadCashBook(
       takenBy: w.takenBy,
       note: w.note ?? null,
       amount: w.amount,
+      returnedThisMonth: (w.returns ?? [])
+        .filter((r) => r.monthYear === monthYear)
+        .reduce((s, r) => s + r.amount, 0),
       outstanding: w.amount - withdrawalReturnedAsOf(w, monthYear),
       fromMonth: w.monthYear !== monthYear ? w.monthYear : null,
     })),

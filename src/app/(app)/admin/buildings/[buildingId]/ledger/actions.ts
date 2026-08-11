@@ -667,6 +667,16 @@ export async function editCharge(
   }
 
   const before = { description: charge.description, amount: charge.amount };
+  // Log the edit against the open month so past months keep their old values.
+  charge.adjustments.push({
+    monthYear,
+    amount,
+    description,
+    prevAmount: charge.amount,
+    prevDescription: charge.description,
+    by: actor.name ?? null,
+    at: new Date(),
+  });
   charge.description = description;
   charge.amount = amount;
   charge.status =

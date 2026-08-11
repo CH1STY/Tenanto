@@ -22,6 +22,7 @@ import {
   resolveMonthRoster,
   paidByChargeAsOf,
   chargeStateAsOf,
+  chargeAmountAsOf,
   expenseMonthQuery,
   withdrawalMonthQuery,
   expensePaidAsOf,
@@ -249,11 +250,12 @@ async function CashBook({
     prevPeriod,
   ] = await Promise.all([
     // A month's roster is the immutable snapshot taken when it opened; older
-    // months without a snapshot fall back to tenancy date ranges. On an open
-    // month also include past tenants who still owe so their dues stay
-    // collectable and carry forward.
+    // months without a snapshot fall back to tenancy date ranges. Always also
+    // include past tenants who still owed as of this month and anyone whose
+    // due was adjusted this month, so past dues and edits stay visible even
+    // after the month closes.
     resolveMonthRoster(buildingId, monthYear, period.roster, {
-      includeOutstanding: isOpen,
+      includeOutstanding: true,
     }),
     Income.find({ buildingId, monthYear }).sort({ createdAt: 1 }).lean(),
     // Carried payables still owed as of this month join this month's expenses.
@@ -303,8 +305,21 @@ async function CashBook({
   // still reads as outstanding here instead of being back-dated as paid.
   const paidAsOf = await paidByChargeAsOf(buildingId, monthYear);
   const charges = rawCharges.map((c) => {
-    const state = chargeStateAsOf(c.amount, paidAsOf.get(String(c._id)) ?? 0);
-    return { ...c, paidAmount: state.paidAmount, status: state.status };
+    const asOf = chargeAmountAsOf(c, monthYear);
+    const state = chargeStateAsOf(
+      asOf.amount,
+      paidAsOf.get(String(c._id)) ?? 0,
+    );
+    return {
+      ...c,
+      amount: asOf.amount,
+      description: asOf.description,
+      paidAmount: state.paidAmount,
+      status: state.status,
+      adjustments: (c.adjustments ?? []).filter(
+        (a) => a.monthYear <= monthYear,
+      ),
+    };
   });
 
   // Charges to show per tenancy: this month's service charge + any outstanding.
@@ -314,7 +329,12 @@ async function CashBook({
       c.monthYear === monthYear &&
       c.category === CHARGE_CATEGORY.SERVICE_CHARGE;
     const isOutstanding = c.status !== CHARGE_STATUS.PAID;
-    if (!isThisMonthSC && !isOutstanding) continue;
+    // Keep a cleared due visible on the month its amount was adjusted so the
+    // edit (e.g. a cancellation) is documented even at zero remaining.
+    const adjustedThisMonth = c.adjustments.some(
+      (a) => a.monthYear === monthYear,
+    );
+    if (!isThisMonthSC && !isOutstanding && !adjustedThisMonth) continue;
     const key = String(c.tenancyId);
     const list = chargesByTenancy.get(key) ?? [];
     list.push(c);
@@ -354,9 +374,17 @@ async function CashBook({
     .sort((a, b) => compareUnitLabels(a.unit, b.unit));
 
   // Active tenants render in the main receipts list; past tenants with a
-  // pending due appear in their own section so the two never mix.
+  // pending due (or a due adjusted this month) appear in their own section so
+  // the two never mix.
   const activeRows = rows.filter((r) => !r.isPastTenant);
-  const pastDueRows = rows.filter((r) => r.isPastTenant && r.due > 0);
+  const pastDueRows = rows.filter(
+    (r) =>
+      r.isPastTenant &&
+      (r.due > 0 ||
+        r.charges.some((c) =>
+          c.adjustments.some((a) => a.monthYear === monthYear),
+        )),
+  );
 
   const tenantOptions = activeRows.map((r) => ({
     tenancyId: r.tenancyId,
@@ -417,6 +445,19 @@ async function CashBook({
                   Total {money(c.amount)}
                   {c.paidAmount > 0 ? ` · Paid ${money(c.paidAmount)}` : ""}
                 </div>
+                {c.adjustments && c.adjustments.length > 0 ? (
+                  <ul className="mt-1 space-y-0.5">
+                    {c.adjustments.map((a, i) => (
+                      <li
+                        key={i}
+                        className="text-[11px] text-amber-600 dark:text-amber-400"
+                      >
+                        Adjusted {money(a.prevAmount)} → {money(a.amount)} in{" "}
+                        {monthLabel(a.monthYear)}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
                 {isOpen && remaining > 0 ? (
                   <PayForm
                     buildingId={buildingId}
@@ -1052,10 +1093,11 @@ async function PrintCashBook({
     totals,
     prevPeriod,
   ] = await Promise.all([
-    // On an open month, include past tenants who still owe so their dues
-    // print in the dedicated past-tenants section.
+    // Include past tenants who still owed as of this month and anyone whose
+    // due was adjusted this month, so past dues and edits print in the
+    // dedicated past-tenants section even after the month closes.
     resolveMonthRoster(buildingId, monthYear, period.roster, {
-      includeOutstanding: period.status === PERIOD_STATUS.OPEN,
+      includeOutstanding: true,
     }),
     Income.find({ buildingId, monthYear }).sort({ receivedAt: 1 }).lean(),
     Expense.find(expenseMonthQuery(buildingId, monthYear))
@@ -1107,10 +1149,26 @@ async function PrintCashBook({
       .lean()
   )
     .map((c) => {
-      const state = chargeStateAsOf(c.amount, paidAsOf.get(String(c._id)) ?? 0);
-      return { ...c, paidAmount: state.paidAmount, status: state.status };
+      const asOf = chargeAmountAsOf(c, monthYear);
+      const state = chargeStateAsOf(
+        asOf.amount,
+        paidAsOf.get(String(c._id)) ?? 0,
+      );
+      return {
+        ...c,
+        amount: asOf.amount,
+        description: asOf.description,
+        paidAmount: state.paidAmount,
+        status: state.status,
+      };
     })
-    .filter((c) => c.status !== CHARGE_STATUS.PAID);
+    // Keep charges still owed as of this month, plus any cleared this month by
+    // an adjustment, so a cancellation is documented on the month it happened.
+    .filter(
+      (c) =>
+        c.status !== CHARGE_STATUS.PAID ||
+        (c.adjustments ?? []).some((a) => a.monthYear === monthYear),
+    );
 
   const prevNote = prevPeriod?.note?.trim() ? prevPeriod.note.trim() : null;
   const prevNoteMonth = prevPeriod?.monthYear ?? null;
@@ -1145,6 +1203,13 @@ async function PrintCashBook({
           amount: c.amount,
           paidAmount: c.paidAmount,
           remaining: c.amount - c.paidAmount,
+          adjustments: (c.adjustments ?? [])
+            .filter((a) => a.monthYear <= monthYear)
+            .map((a) => ({
+              prevAmount: a.prevAmount,
+              amount: a.amount,
+              monthYear: a.monthYear,
+            })),
         })),
       };
     })
@@ -1172,6 +1237,9 @@ async function PrintCashBook({
       fromMonth: w.monthYear !== monthYear ? w.monthYear : null,
       amount: w.amount,
       returned,
+      returnedThisMonth: (w.returns ?? [])
+        .filter((r) => r.monthYear === monthYear)
+        .reduce((s, r) => s + r.amount, 0),
       outstanding: w.amount - returned,
     };
   });
@@ -1179,7 +1247,14 @@ async function PrintCashBook({
   const cell = "border-b border-black/25 py-[1.5px] align-top";
 
   const activePrintRows = rows.filter((r) => !r.isPastTenant);
-  const pastDuePrintRows = rows.filter((r) => r.isPastTenant && r.dueTotal > 0);
+  const pastDuePrintRows = rows.filter(
+    (r) =>
+      r.isPastTenant &&
+      (r.dueTotal > 0 ||
+        r.dues.some((d) =>
+          d.adjustments.some((a) => a.monthYear === monthYear),
+        )),
+  );
 
   const renderPrintRow = (r: (typeof rows)[number]) => (
     <Fragment key={`${r.unit}-${r.name}`}>
@@ -1205,10 +1280,17 @@ async function PrintCashBook({
               (total {money(d.amount)}
               {d.paidAmount > 0 ? `, paid ${money(d.paidAmount)}` : ""})
             </span>
+            {d.adjustments.map((a, i) => (
+              <span key={i} className="text-black/50">
+                {" "}
+                · adjusted {money(a.prevAmount)}→{money(a.amount)} in{" "}
+                {monthLabel(a.monthYear)}
+              </span>
+            ))}
           </td>
           <td />
           <td className="py-0 text-right text-[9px] tabular-nums text-red-600">
-            {money(d.remaining)}
+            {d.remaining > 0 ? money(d.remaining) : "—"}
           </td>
         </tr>
       ))}
@@ -1276,13 +1358,30 @@ async function PrintCashBook({
                 </tr>
               ))}
               {totals.withdrawalsReturned > 0 ? (
-                <tr>
-                  <td className={cell}>Withdrawals returned</td>
-                  <td className={`${cell} text-right tabular-nums`}>
-                    {money(totals.withdrawalsReturned)}
-                  </td>
-                  <td className={cell} />
-                </tr>
+                <>
+                  <tr>
+                    <td className={cell}>Withdrawals returned</td>
+                    <td className={`${cell} text-right tabular-nums`}>
+                      {money(totals.withdrawalsReturned)}
+                    </td>
+                    <td className={cell} />
+                  </tr>
+                  {withdrawalRows
+                    .filter((w) => w.returnedThisMonth > 0)
+                    .map((w) => (
+                      <tr key={`ret-${w.id}`}>
+                        <td className="py-0 pl-3 text-[9px] text-black/70">
+                          ↳ {w.takenBy} · returned {money(w.returnedThisMonth)}{" "}
+                          of {money(w.amount)}
+                          {w.outstanding > 0
+                            ? ` (${money(w.outstanding)} still out)`
+                            : " (fully repaid)"}
+                        </td>
+                        <td />
+                        <td className={cell} />
+                      </tr>
+                    ))}
+                </>
               ) : null}
             </tbody>
             <tfoot>
@@ -1359,7 +1458,7 @@ async function PrintCashBook({
       {withdrawalRows.length > 0 ? (
         <div className="mt-2 print-avoid-break">
           <h2 className="border-b border-black pb-0.5 text-[11px] font-bold">
-            Withdrawals (advances)
+            Withdrawals and Returns
           </h2>
           <table className="w-full">
             <thead>

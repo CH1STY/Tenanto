@@ -18,6 +18,12 @@ export type CashRow = {
     fromOtherMonth: boolean;
     paidAmount: number;
     amount: number;
+    adjustments: {
+      prevAmount: number;
+      amount: number;
+      monthYear: string;
+      by: string | null;
+    }[];
   }[];
 };
 
@@ -56,6 +62,7 @@ export type CashBookData = {
     takenBy: string;
     note: string | null;
     amount: number;
+    returnedThisMonth: number;
     outstanding: number;
     fromMonth: string | null;
   }[];
@@ -182,10 +189,17 @@ function CashBookTables({ data }: { data: CashBookData }) {
   const cashInHand = totalReceipts - data.totals.expensesPaid;
   const closing = cashInHand - data.totals.withdrawals;
 
-  // Active tenants list normally; past tenants with a pending due get their
-  // own section so the two never mix.
+  // Active tenants list normally; past tenants with a pending due (or a due
+  // adjusted this month) get their own section so the two never mix.
   const activeRows = data.rows.filter((r) => !r.isPastTenant);
-  const pastDueRows = data.rows.filter((r) => r.isPastTenant && r.due > 0);
+  const pastDueRows = data.rows.filter(
+    (r) =>
+      r.isPastTenant &&
+      (r.due > 0 ||
+        r.charges.some((c) =>
+          c.adjustments.some((a) => a.monthYear === data.monthYear),
+        )),
+  );
 
   const renderRow = (r: CashRow) => (
     <div key={r.key} className="px-4 py-3">
@@ -230,6 +244,19 @@ function CashBookTables({ data }: { data: CashBookData }) {
                   Total {money(c.amount)}
                   {c.paidAmount > 0 ? ` · Paid ${money(c.paidAmount)}` : ""}
                 </div>
+                {c.adjustments.length > 0 ? (
+                  <ul className="mt-0.5 space-y-0.5">
+                    {c.adjustments.map((a, i) => (
+                      <li
+                        key={i}
+                        className="text-[11px] text-amber-600 dark:text-amber-400"
+                      >
+                        Adjusted {money(a.prevAmount)} → {money(a.amount)} in{" "}
+                        {monthLabel(a.monthYear)}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
               </li>
             );
           })}
@@ -240,6 +267,16 @@ function CashBookTables({ data }: { data: CashBookData }) {
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+      {data.note ? (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 lg:col-span-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">
+            Note of {monthLabel(data.monthYear)}
+          </p>
+          <p className="mt-1 whitespace-pre-wrap text-sm text-black/70 dark:text-white/70">
+            {data.note}
+          </p>
+        </div>
+      ) : null}
       {data.prevNote ? (
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 lg:col-span-2">
           <p className="text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">
@@ -483,13 +520,24 @@ function PrintView({ data }: { data: CashBookData }) {
       : cashInHand;
   const isCurrent = data.monthYear === currentMonthYear();
 
+  const activeRows = data.rows.filter((r) => !r.isPastTenant);
+  const pastDueRows = data.rows.filter(
+    (r) =>
+      r.isPastTenant &&
+      (r.due > 0 ||
+        r.charges.some((c) =>
+          c.adjustments.some((a) => a.monthYear === data.monthYear),
+        )),
+  );
+
   const cell = "border-b border-black/25 py-[1.5px] align-top";
 
-  const activeRows = data.rows.filter((r) => !r.isPastTenant);
-  const pastDueRows = data.rows.filter((r) => r.isPastTenant && r.due > 0);
-
   const renderPrintRow = (r: CashRow) => {
-    const dues = r.charges.filter((c) => c.amount - c.paidAmount > 0);
+    const dues = r.charges.filter(
+      (c) =>
+        c.amount - c.paidAmount > 0 ||
+        c.adjustments.some((a) => a.monthYear === data.monthYear),
+    );
     return (
       <Fragment key={r.key}>
         <tr>
@@ -515,10 +563,19 @@ function PrintView({ data }: { data: CashBookData }) {
                 (total {money(c.amount)}
                 {c.paidAmount > 0 ? `, paid ${money(c.paidAmount)}` : ""})
               </span>
+              {c.adjustments.map((a, i) => (
+                <span key={i} className="text-black/50">
+                  {" "}
+                  · adjusted {money(a.prevAmount)}→{money(a.amount)} in{" "}
+                  {monthLabel(a.monthYear)}
+                </span>
+              ))}
             </td>
             <td />
             <td className="py-0 text-right text-[9px] tabular-nums text-red-600">
-              {money(c.amount - c.paidAmount)}
+              {c.amount - c.paidAmount > 0
+                ? money(c.amount - c.paidAmount)
+                : "—"}
             </td>
           </tr>
         ))}
@@ -587,13 +644,30 @@ function PrintView({ data }: { data: CashBookData }) {
                 </tr>
               ))}
               {data.totals.withdrawalsReturned > 0 ? (
-                <tr>
-                  <td className={cell}>Withdrawals returned</td>
-                  <td className={`${cell} text-right tabular-nums`}>
-                    {money(data.totals.withdrawalsReturned)}
-                  </td>
-                  <td className={cell} />
-                </tr>
+                <>
+                  <tr>
+                    <td className={cell}>Withdrawals returned</td>
+                    <td className={`${cell} text-right tabular-nums`}>
+                      {money(data.totals.withdrawalsReturned)}
+                    </td>
+                    <td className={cell} />
+                  </tr>
+                  {data.withdrawals
+                    .filter((w) => w.returnedThisMonth > 0)
+                    .map((w) => (
+                      <tr key={`ret-${w.id}`}>
+                        <td className="py-0 pl-3 text-[9px] text-black/70">
+                          ↳ {w.takenBy} · returned {money(w.returnedThisMonth)}{" "}
+                          of {money(w.amount)}
+                          {w.outstanding > 0
+                            ? ` (${money(w.outstanding)} still out)`
+                            : " (fully repaid)"}
+                        </td>
+                        <td />
+                        <td className={cell} />
+                      </tr>
+                    ))}
+                </>
               ) : null}
             </tbody>
             <tfoot>
@@ -677,7 +751,7 @@ function PrintView({ data }: { data: CashBookData }) {
       {data.withdrawals.length > 0 ? (
         <div className="mt-2 print-avoid-break">
           <h2 className="border-b border-black pb-0.5 text-[11px] font-bold">
-            Withdrawals (advances)
+            Withdrawals and Returns
           </h2>
           <table className="w-full">
             <thead>
