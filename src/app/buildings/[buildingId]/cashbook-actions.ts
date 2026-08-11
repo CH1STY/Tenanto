@@ -8,6 +8,7 @@ import { Expense } from "@/models/Expense";
 import { Withdrawal } from "@/models/Withdrawal";
 import { Payment } from "@/models/Payment";
 import { MonthlyPeriod } from "@/models/MonthlyPeriod";
+import { MonthMedia } from "@/models/MonthMedia";
 import {
   getPeriodTotals,
   resolveMonthRoster,
@@ -67,6 +68,7 @@ export async function loadCashBook(
     totals,
     prevPeriod,
     paidAsOf,
+    mediaDocs,
   ] = await Promise.all([
     Building.findById(buildingId).select("name address").lean(),
     // Cap charges to this month or earlier so a later month's dues never leak in.
@@ -92,6 +94,10 @@ export async function loadCashBook(
       .select("monthYear note")
       .lean(),
     paidByChargeAsOf(buildingId, monthYear),
+    MonthMedia.find({ buildingId, monthYear })
+      .select("-data")
+      .sort({ createdAt: 1 })
+      .lean(),
   ]);
 
   // Settle each charge only with payments received up to this month, and read
@@ -225,5 +231,15 @@ export async function loadCashBook(
       fromMonth: w.monthYear !== monthYear ? w.monthYear : null,
     })),
     totals,
+    media: mediaDocs.map((m) => ({
+      id: String(m._id),
+      filename: m.filename ?? "",
+      contentType: m.contentType ?? "image/jpeg",
+      width: m.width ?? 0,
+      height: m.height ?? 0,
+      size: m.size ?? 0,
+      uploadedByName: m.uploadedByName ?? "",
+      createdAt: m.createdAt ? shortDate(m.createdAt) : "",
+    })),
   };
 }

@@ -4,6 +4,8 @@ import { Fragment, useState, useTransition } from "react";
 import { monthLabel, currentMonthYear, cashbookFileName } from "@/lib/dates";
 import { PERIOD_STATUS, EXPENSE_STATUS } from "@/lib/constants";
 import { loadCashBook } from "./cashbook-actions";
+import { type MediaItem } from "./media-actions";
+import { ImageLightbox } from "@/components/image-lightbox";
 
 export type CashRow = {
   key: string;
@@ -73,6 +75,7 @@ export type CashBookData = {
     withdrawals: number;
     withdrawalsReturned: number;
   };
+  media: MediaItem[];
 };
 
 const money = (n: number) => n.toLocaleString();
@@ -167,6 +170,11 @@ export function MonthlyCashBook({
             }`}
           >
             <CashBookTables data={data} />
+            <MonthMediaSection
+              buildingId={buildingId}
+              monthYear={month}
+              media={data.media}
+            />
           </div>
         ) : (
           <p className="mt-6 text-sm text-black/55 dark:text-white/55">
@@ -867,5 +875,71 @@ function PrintView({ data }: { data: CashBookData }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/** Read-only gallery of a month's attached images (managed from the ledger). */
+function MonthMediaSection({
+  buildingId,
+  monthYear,
+  media,
+}: {
+  buildingId: string;
+  monthYear: string;
+  media: MediaItem[];
+}) {
+  const [openIndex, setOpenIndex] = useState<number | null>(null);
+
+  if (media.length === 0) return null;
+
+  const images = media.map((m) => ({
+    url: `/buildings/${buildingId}/media/${m.id}`,
+    filename: m.filename,
+  }));
+
+  return (
+    <section className="no-print mt-8">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-black/50 dark:text-white/50">
+          Attachments — {monthLabel(monthYear)}
+        </h3>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+        {media.map((m, i) => (
+          <div
+            key={m.id}
+            className="group relative overflow-hidden rounded-lg border border-black/10 dark:border-white/15"
+          >
+            <button
+              type="button"
+              onClick={() => setOpenIndex(i)}
+              className="block w-full cursor-zoom-in"
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={`/buildings/${buildingId}/media/${m.id}`}
+                alt={m.filename || "Attachment"}
+                loading="lazy"
+                className="aspect-square w-full object-cover"
+              />
+            </button>
+            <div className="flex items-center justify-between gap-2 px-2 py-1.5">
+              <span className="min-w-0 truncate text-[11px] text-black/50 dark:text-white/50">
+                {m.createdAt}
+                {m.uploadedByName ? ` · ${m.uploadedByName}` : ""}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <ImageLightbox
+        images={images}
+        index={openIndex}
+        onClose={() => setOpenIndex(null)}
+        onIndexChange={setOpenIndex}
+      />
+    </section>
   );
 }

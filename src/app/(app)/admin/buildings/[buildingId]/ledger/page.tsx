@@ -32,6 +32,8 @@ import { monthLabel, currentMonthYear, cashbookFileName } from "@/lib/dates";
 import { compareUnitLabels } from "@/lib/units";
 import { objectIdSchema } from "@/lib/validators/building";
 import { ConfirmSubmit } from "@/components/confirm-submit";
+import { loadMonthMedia } from "@/app/buildings/[buildingId]/media-actions";
+import { MonthAttachments } from "./media";
 import {
   OpenMonthForm,
   PayForm,
@@ -304,6 +306,7 @@ async function CashBook({
   // received up to and including this month, so a due paid in a later month
   // still reads as outstanding here instead of being back-dated as paid.
   const paidAsOf = await paidByChargeAsOf(buildingId, monthYear);
+  const media = await loadMonthMedia(buildingId, monthYear);
   const charges = rawCharges.map((c) => {
     const asOf = chargeAmountAsOf(c, monthYear);
     const state = chargeStateAsOf(
@@ -974,6 +977,13 @@ async function CashBook({
           </div>
         </section>
       </div>
+
+      <MonthAttachments
+        buildingId={buildingId}
+        monthYear={monthYear}
+        initialMedia={media}
+        canDelete={canManageMonths && isOpen}
+      />
     </div>
   );
 }
