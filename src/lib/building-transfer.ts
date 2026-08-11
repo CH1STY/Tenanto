@@ -11,10 +11,14 @@ import { Payment } from "@/models/Payment";
 import { Income } from "@/models/Income";
 import { Expense } from "@/models/Expense";
 import { Withdrawal } from "@/models/Withdrawal";
+import { MonthMedia } from "@/models/MonthMedia";
 import { ROLES, PERIOD_STATUS } from "@/lib/constants";
 
-/** Bump when the on-disk export shape changes incompatibly. */
-export const BUILDING_EXPORT_VERSION = 1;
+/**
+ * Bump when the on-disk export shape changes incompatibly.
+ * v2 added attached month media (images) to the export payload.
+ */
+export const BUILDING_EXPORT_VERSION = 2;
 
 type Doc = Record<string, unknown>;
 
@@ -31,7 +35,32 @@ export type BuildingExport = {
   incomes: Doc[];
   expenses: Doc[];
   withdrawals: Doc[];
+  media: Doc[];
 };
+
+/** Turn stored image bytes (Buffer or BSON Binary) into a base64 string. */
+function bufferToBase64(value: unknown): string {
+  if (Buffer.isBuffer(value)) return value.toString("base64");
+  if (value && typeof value === "object") {
+    const maybe = value as { buffer?: unknown; data?: unknown };
+    if (Buffer.isBuffer(maybe.buffer)) return maybe.buffer.toString("base64");
+    if (Array.isArray(maybe.data)) {
+      return Buffer.from(maybe.data as number[]).toString("base64");
+    }
+  }
+  return "";
+}
+
+/** Decode a base64 image string back into a Buffer, or null when unusable. */
+function base64ToBuffer(value: unknown): Buffer | null {
+  if (typeof value !== "string" || value.length === 0) return null;
+  try {
+    const buf = Buffer.from(value, "base64");
+    return buf.length > 0 ? buf : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Collect a single building and every record that belongs to it. */
 export async function exportBuilding(
@@ -49,16 +78,25 @@ export async function exportBuilding(
 
   const userIds = [...new Set(tenancies.map((t) => String(t.userId)))];
 
-  const [users, periods, charges, payments, incomes, expenses, withdrawals] =
-    await Promise.all([
-      User.find({ _id: { $in: userIds }, role: ROLES.TENANT }).lean(),
-      MonthlyPeriod.find({ buildingId }).lean(),
-      Charge.find({ buildingId }).lean(),
-      Payment.find({ buildingId }).lean(),
-      Income.find({ buildingId }).lean(),
-      Expense.find({ buildingId }).lean(),
-      Withdrawal.find({ buildingId }).lean(),
-    ]);
+  const [
+    users,
+    periods,
+    charges,
+    payments,
+    incomes,
+    expenses,
+    withdrawals,
+    media,
+  ] = await Promise.all([
+    User.find({ _id: { $in: userIds }, role: ROLES.TENANT }).lean(),
+    MonthlyPeriod.find({ buildingId }).lean(),
+    Charge.find({ buildingId }).lean(),
+    Payment.find({ buildingId }).lean(),
+    Income.find({ buildingId }).lean(),
+    Expense.find({ buildingId }).lean(),
+    Withdrawal.find({ buildingId }).lean(),
+    MonthMedia.find({ buildingId }).lean(),
+  ]);
 
   return {
     version: BUILDING_EXPORT_VERSION,
@@ -73,6 +111,8 @@ export async function exportBuilding(
     incomes: incomes as Doc[],
     expenses: expenses as Doc[],
     withdrawals: withdrawals as Doc[],
+    // Image bytes are base64-encoded so the export stays a plain JSON file.
+    media: media.map((m) => ({ ...(m as Doc), data: bufferToBase64(m.data) })),
   };
 }
 
@@ -145,16 +185,19 @@ export async function importBuilding(
   const incomes = asArray(data.incomes);
   const expenses = asArray(data.expenses);
   const withdrawals = asArray(data.withdrawals);
+  const media = asArray(data.media);
 
   const newBuildingId = oid();
   const userMap = new Map<string, mongoose.Types.ObjectId>();
   const unitMap = new Map<string, mongoose.Types.ObjectId>();
   const tenancyMap = new Map<string, mongoose.Types.ObjectId>();
   const chargeMap = new Map<string, mongoose.Types.ObjectId>();
+  const periodMap = new Map<string, mongoose.Types.ObjectId>();
   for (const u of users) userMap.set(String(u._id), oid());
   for (const u of units) unitMap.set(String(u._id), oid());
   for (const t of tenancies) tenancyMap.set(String(t._id), oid());
   for (const c of charges) chargeMap.set(String(c._id), oid());
+  for (const p of periods) periodMap.set(String(p._id), oid());
 
   const mapId = (m: Map<string, mongoose.Types.ObjectId>, v: unknown) =>
     m.get(String(v)) ?? null;
@@ -220,6 +263,7 @@ export async function importBuilding(
   if (periods.length > 0) {
     await MonthlyPeriod.insertMany(
       periods.map((p) => ({
+        _id: periodMap.get(String(p._id)),
         buildingId: newBuildingId,
         monthYear: str(p.monthYear),
         openingBalance: num(p.openingBalance),
@@ -343,6 +387,32 @@ export async function importBuilding(
       })),
       { ordered: false },
     );
+  }
+
+  if (media.length > 0) {
+    const mediaDocs = media
+      .map((m) => {
+        const bytes = base64ToBuffer(m.data);
+        const periodId = mapId(periodMap, m.periodId);
+        if (!bytes || !periodId) return null;
+        return {
+          buildingId: newBuildingId,
+          periodId,
+          monthYear: str(m.monthYear),
+          data: bytes,
+          contentType: str(m.contentType, "image/jpeg"),
+          filename: str(m.filename),
+          size: num(m.size, bytes.length),
+          width: num(m.width),
+          height: num(m.height),
+          uploadedById: null,
+          uploadedByName: str(m.uploadedByName),
+        };
+      })
+      .filter((d): d is NonNullable<typeof d> => d !== null);
+    if (mediaDocs.length > 0) {
+      await MonthMedia.insertMany(mediaDocs, { ordered: false });
+    }
   }
 
   return {

@@ -2,8 +2,9 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   experimental: {
-    // Allow month attachment uploads (optimized images can exceed the 1 MB default).
-    serverActions: { bodySizeLimit: "8mb" },
+    // Month image uploads and building imports (which embed base64 images)
+    // can exceed the 1 MB default, so allow a larger server-action body.
+    serverActions: { bodySizeLimit: "32mb" },
   },
 };
 

@@ -2,7 +2,8 @@
 
 Building‑wise tenant management with a month‑wise cash book: buildings, floors,
 units, tenants, service charges, dues, payments, income, expenses, withdrawals,
-printable/downloadable monthly cash books, and a full audit trail.
+monthly image attachments, printable/downloadable monthly cash books, a full
+audit trail, and one‑click building import/export.
 
 ## Tech stack
 
@@ -135,6 +136,31 @@ After first sign‑in as SuperAdmin:
 3. Add admins and grant them building access (**Admins**).
 4. Open a month in a building's **Cash book** and start recording payments,
    income, expenses and withdrawals.
+
+## Import & export buildings
+
+A **SuperAdmin** can move a building — with all of its data — between
+environments as a single self‑contained JSON file, from **Buildings**.
+
+- **Export** (per building): downloads a `<building>_<date>.json` file
+  containing the building, its units, tenants, tenancies, monthly periods,
+  charges, payments, income, expenses, withdrawals, and every attached month
+  image (bundled as base64). Available at
+  `GET /admin/buildings/export/[buildingId]`.
+- **Import**: upload an exported JSON file to recreate it as a **brand‑new**
+  building. Every record is given a fresh id and all cross‑references (units,
+  tenancies, charges, payments, and month images) are remapped, so an import
+  never collides with existing data and stays fully self‑consistent. Imports
+  never overwrite an existing building.
+
+Notes:
+
+- The export format is versioned (`BUILDING_EXPORT_VERSION`); older v1 exports
+  (without images) still import cleanly.
+- Import files are capped at **30 MB**. Because images are embedded as base64,
+  the server‑action body limit is raised accordingly in `next.config.ts`.
+- Deleting a building removes all of its scoped records, including attached
+  images, so nothing is left orphaned.
 
 ## Scripts
 

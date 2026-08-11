@@ -9,6 +9,14 @@ import { logAudit } from "@/lib/audit";
 import { AUDIT_ACTIONS } from "@/lib/constants";
 import { Building } from "@/models/Building";
 import { Unit } from "@/models/Unit";
+import { Tenancy } from "@/models/Tenancy";
+import { MonthlyPeriod } from "@/models/MonthlyPeriod";
+import { Charge } from "@/models/Charge";
+import { Payment } from "@/models/Payment";
+import { Income } from "@/models/Income";
+import { Expense } from "@/models/Expense";
+import { Withdrawal } from "@/models/Withdrawal";
+import { MonthMedia } from "@/models/MonthMedia";
 import { importBuilding } from "@/lib/building-transfer";
 import {
   buildingCreateSchema,
@@ -190,8 +198,8 @@ export async function importBuildingFromFile(
   if (!(file instanceof File) || file.size === 0) {
     return fail("Choose a building export (.json) file.");
   }
-  if (file.size > 25_000_000) {
-    return fail("That file is too large (max 25 MB).");
+  if (file.size > 30_000_000) {
+    return fail("That file is too large (max 30 MB).");
   }
 
   let parsed: unknown;
@@ -231,6 +239,18 @@ export async function deleteBuilding(formData: FormData) {
 
   const { deletedCount } = await Unit.deleteMany({ buildingId });
   await Building.deleteOne({ _id: buildingId });
+
+  // Remove every building-scoped record so nothing (including images) is orphaned.
+  await Promise.all([
+    Tenancy.deleteMany({ buildingId }),
+    MonthlyPeriod.deleteMany({ buildingId }),
+    Charge.deleteMany({ buildingId }),
+    Payment.deleteMany({ buildingId }),
+    Income.deleteMany({ buildingId }),
+    Expense.deleteMany({ buildingId }),
+    Withdrawal.deleteMany({ buildingId }),
+    MonthMedia.deleteMany({ buildingId }),
+  ]);
 
   await logAudit({
     action: AUDIT_ACTIONS.DELETE,
