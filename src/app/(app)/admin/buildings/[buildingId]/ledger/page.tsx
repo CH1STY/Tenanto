@@ -790,7 +790,11 @@ async function CashBook({
                             ) : null}
                             {outstanding > 0 ? (
                               <span className="ml-1 text-red-600 dark:text-red-400">
-                                {paid > 0 ? "PARTIAL" : "DUE"}
+                                {paid > 0
+                                  ? `PARTIAL · paid ${money(paid)}, due ${money(
+                                      outstanding,
+                                    )}`
+                                  : "DUE"}
                               </span>
                             ) : null}
                           </span>
@@ -1442,7 +1446,11 @@ async function PrintCashBook({
                       {e.status === EXPENSE_STATUS.DUE ? (
                         <span className="text-red-600"> (DUE)</span>
                       ) : e.status === EXPENSE_STATUS.PARTIAL ? (
-                        <span className="text-red-600"> (PARTIAL)</span>
+                        <span className="text-red-600">
+                          {" "}
+                          (PARTIAL · paid {money(e.paidAmount)} of{" "}
+                          {money(e.amount)})
+                        </span>
                       ) : null}
                     </td>
                     <td className={`${cell} text-right tabular-nums`}>

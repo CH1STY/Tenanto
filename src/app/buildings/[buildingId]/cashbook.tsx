@@ -405,7 +405,8 @@ function CashBookTables({ data }: { data: CashBookData }) {
                         </span>
                       ) : e.outstanding > 0 ? (
                         <span className="ml-1 text-red-600 dark:text-red-400">
-                          PARTIAL · due {money(e.outstanding)}
+                          PARTIAL · paid {money(e.paidAmount)}, due{" "}
+                          {money(e.outstanding)}
                         </span>
                       ) : null}
                     </span>
@@ -730,7 +731,8 @@ function PrintView({ data }: { data: CashBookData }) {
                       ) : e.outstanding > 0 ? (
                         <span className="text-red-600">
                           {" "}
-                          (PARTIAL, due {money(e.outstanding)})
+                          (PARTIAL · paid {money(e.paidAmount)} of{" "}
+                          {money(e.amount)})
                         </span>
                       ) : (
                         ""
