@@ -55,6 +55,7 @@ export type CashBookData = {
     status: string;
     amount: number;
     paidAmount: number;
+    paidThisMonth: number;
     outstanding: number;
     fromMonth: string | null;
   }[];
@@ -405,8 +406,11 @@ function CashBookTables({ data }: { data: CashBookData }) {
                         </span>
                       ) : e.outstanding > 0 ? (
                         <span className="ml-1 text-red-600 dark:text-red-400">
-                          PARTIAL · paid {money(e.paidAmount)}, due{" "}
-                          {money(e.outstanding)}
+                          PARTIAL · paid {money(e.paidThisMonth)} this month
+                          {e.paidAmount > e.paidThisMonth
+                            ? ` (${money(e.paidAmount)} of ${money(e.amount)})`
+                            : ` of ${money(e.amount)}`}
+                          , due {money(e.outstanding)}
                         </span>
                       ) : null}
                     </span>
@@ -731,8 +735,11 @@ function PrintView({ data }: { data: CashBookData }) {
                       ) : e.outstanding > 0 ? (
                         <span className="text-red-600">
                           {" "}
-                          (PARTIAL · paid {money(e.paidAmount)} of{" "}
-                          {money(e.amount)})
+                          (PARTIAL · paid {money(e.paidThisMonth)} this month
+                          {e.paidAmount > e.paidThisMonth
+                            ? `, ${money(e.paidAmount)} of ${money(e.amount)}`
+                            : ` of ${money(e.amount)}`}
+                          , due {money(e.outstanding)})
                         </span>
                       ) : (
                         ""

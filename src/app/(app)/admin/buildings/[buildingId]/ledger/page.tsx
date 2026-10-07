@@ -26,6 +26,7 @@ import {
   expenseMonthQuery,
   withdrawalMonthQuery,
   expensePaidAsOf,
+  expensePaidInMonth,
   withdrawalReturnedAsOf,
 } from "@/lib/ledger";
 import { monthLabel, currentMonthYear, cashbookFileName } from "@/lib/dates";
@@ -282,6 +283,7 @@ async function CashBook({
   const expenses = rawExpenses.map((e) => ({
     ...e,
     paidAmount: expensePaidAsOf(e, monthYear),
+    paidThisMonth: expensePaidInMonth(e, monthYear),
   }));
   const withdrawals = rawWithdrawals.map((w) => ({
     ...w,
@@ -759,6 +761,7 @@ async function CashBook({
                   {expenses.map((e) => {
                     const carried = e.monthYear !== monthYear;
                     const paid = e.paidAmount ?? 0;
+                    const paidThisMonth = e.paidThisMonth ?? 0;
                     const outstanding = e.amount - paid;
                     const payments = e.payments ?? [];
                     const lastPayment = payments[payments.length - 1];
@@ -791,9 +794,15 @@ async function CashBook({
                             {outstanding > 0 ? (
                               <span className="ml-1 text-red-600 dark:text-red-400">
                                 {paid > 0
-                                  ? `PARTIAL · paid ${money(paid)}, due ${money(
-                                      outstanding,
-                                    )}`
+                                  ? `PARTIAL · paid ${money(
+                                      paidThisMonth,
+                                    )} this month${
+                                      paid > paidThisMonth
+                                        ? ` (${money(paid)} of ${money(
+                                            e.amount,
+                                          )})`
+                                        : ` of ${money(e.amount)}`
+                                    }, due ${money(outstanding)}`
                                   : "DUE"}
                               </span>
                             ) : null}
@@ -1135,6 +1144,7 @@ async function PrintCashBook({
     return {
       ...e,
       paidAmount: paid,
+      paidThisMonth: expensePaidInMonth(e, monthYear),
       status:
         e.amount - paid <= 0
           ? EXPENSE_STATUS.PAID
@@ -1448,8 +1458,11 @@ async function PrintCashBook({
                       ) : e.status === EXPENSE_STATUS.PARTIAL ? (
                         <span className="text-red-600">
                           {" "}
-                          (PARTIAL · paid {money(e.paidAmount)} of{" "}
-                          {money(e.amount)})
+                          (PARTIAL · paid {money(e.paidThisMonth)} this month
+                          {e.paidAmount > e.paidThisMonth
+                            ? `, ${money(e.paidAmount)} of ${money(e.amount)}`
+                            : ` of ${money(e.amount)}`}
+                          , due {money(e.amount - e.paidAmount)})
                         </span>
                       ) : null}
                     </td>

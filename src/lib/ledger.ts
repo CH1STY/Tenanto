@@ -271,6 +271,17 @@ export function expensePaidAsOf(
   return Math.min(e.amount, Math.max(0, e.paidAmount ?? 0));
 }
 
+/** Amount settled toward an expense **during** a single month (cash that went
+ * out that month). Legacy rows with no log have no attributable month. */
+export function expensePaidInMonth(
+  e: { payments?: MonthLog[] | null },
+  monthYear: string,
+): number {
+  return (e.payments ?? [])
+    .filter((p) => p.monthYear === monthYear)
+    .reduce((s, p) => s + p.amount, 0);
+}
+
 /** Amount returned toward a withdrawal **as of** a month (same as-of rules). */
 export function withdrawalReturnedAsOf(
   w: {

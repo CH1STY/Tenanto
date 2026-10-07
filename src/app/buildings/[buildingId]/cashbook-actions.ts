@@ -18,6 +18,7 @@ import {
   expenseMonthQuery,
   withdrawalMonthQuery,
   expensePaidAsOf,
+  expensePaidInMonth,
   withdrawalReturnedAsOf,
 } from "@/lib/ledger";
 import { shortDate } from "@/lib/dates";
@@ -214,6 +215,7 @@ export async function loadCashBook(
               : EXPENSE_STATUS.DUE,
         amount: e.amount,
         paidAmount: paid,
+        paidThisMonth: expensePaidInMonth(e, monthYear),
         outstanding,
         fromMonth: e.monthYear !== monthYear ? e.monthYear : null,
       };
