@@ -805,6 +805,10 @@ async function CashBook({
                                     }, due ${money(outstanding)}`
                                   : "DUE"}
                               </span>
+                            ) : paidThisMonth > 0 && paidThisMonth < e.amount ? (
+                              <span className="ml-1 text-black/40 dark:text-white/40">
+                                paid {money(paidThisMonth)} this month (cleared)
+                              </span>
                             ) : null}
                           </span>
                           <span className="flex items-center gap-2 tabular-nums">
@@ -1463,6 +1467,11 @@ async function PrintCashBook({
                             ? `, ${money(e.paidAmount)} of ${money(e.amount)}`
                             : ` of ${money(e.amount)}`}
                           , due {money(e.amount - e.paidAmount)})
+                        </span>
+                      ) : e.paidThisMonth > 0 && e.paidThisMonth < e.amount ? (
+                        <span className="text-black/60">
+                          {" "}
+                          (paid {money(e.paidThisMonth)} this month, cleared)
                         </span>
                       ) : null}
                     </td>

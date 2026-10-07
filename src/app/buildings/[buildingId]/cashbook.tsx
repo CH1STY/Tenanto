@@ -412,6 +412,10 @@ function CashBookTables({ data }: { data: CashBookData }) {
                             : ` of ${money(e.amount)}`}
                           , due {money(e.outstanding)}
                         </span>
+                      ) : e.paidThisMonth > 0 && e.paidThisMonth < e.amount ? (
+                        <span className="ml-1 text-black/40 dark:text-white/40">
+                          paid {money(e.paidThisMonth)} this month (cleared)
+                        </span>
                       ) : null}
                     </span>
                     <span className="tabular-nums">{money(e.amount)}</span>
@@ -740,6 +744,11 @@ function PrintView({ data }: { data: CashBookData }) {
                             ? `, ${money(e.paidAmount)} of ${money(e.amount)}`
                             : ` of ${money(e.amount)}`}
                           , due {money(e.outstanding)})
+                        </span>
+                      ) : e.paidThisMonth > 0 && e.paidThisMonth < e.amount ? (
+                        <span className="text-black/60">
+                          {" "}
+                          (paid {money(e.paidThisMonth)} this month, cleared)
                         </span>
                       ) : (
                         ""
