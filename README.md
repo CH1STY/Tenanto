@@ -138,10 +138,12 @@ branch. Manual runs execute all checks before building and deploying.
 
 Before enabling the pipeline:
 
-1. Use a **Linux Docker-backend agent** on the deployment host. Set its
-   `WOODPECKER_AGENT_LABELS` to include `deployment=tenanto` so deployments
-   always reach the same host. The host must provide
-   `/var/run/docker.sock`, and port **3000** must be available.
+1. Use a single **Linux Docker-backend agent** on the deployment host.
+   The workflow requires only the default `backend=docker` label; no custom
+   agent labels are needed. The host must provide `/var/run/docker.sock`,
+   and port **3000** must be available. If you add agents on other hosts,
+   configure a matching custom label on both the deployment agent and this
+   workflow before enabling them, so deployments stay on the intended host.
 2. Have a Woodpecker administrator enable **Trusted** for this repository;
    the build and deploy steps need the host Docker socket. This grants host
    control to pipeline code, so restrict push access and require approval
