@@ -127,9 +127,11 @@ npm run db:reset && npm run db:up && npm run seed
 ### Woodpecker CI and Docker deployment
 
 The root `.woodpecker.yml` runs `npm ci`, lint, TypeScript checks, and a
-production build on pushes and pull requests. Only successful pushes to
-`main` build a Docker image and deploy it on the Woodpecker agent's Docker
-host. No registry or SSH connection is needed.
+production build on pushes to `main` and pull/merge requests targeting `main`.
+Pull/merge requests are validated only and never deploy. Only successful
+pushes to `main` build a Docker image and deploy it on the Woodpecker agent's
+Docker host. Other branches do not trigger this workflow. No registry or SSH
+connection is needed.
 
 Before enabling the pipeline:
 
