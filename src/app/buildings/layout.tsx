@@ -5,6 +5,7 @@ import { getActiveBuildingId } from "@/lib/active-building";
 import { connectDB } from "@/lib/db";
 import { Building } from "@/models/Building";
 import { objectIdSchema } from "@/lib/validators/building";
+import { requirePublicAccess } from "@/lib/public-access";
 
 async function getActiveBuildingName(): Promise<{
   id: string;
@@ -21,6 +22,7 @@ async function getActiveBuildingName(): Promise<{
 export default async function BuildingsLayout({
   children,
 }: LayoutProps<"/buildings">) {
+  await requirePublicAccess();
   const [user, active] = await Promise.all([
     getCurrentUser(),
     getActiveBuildingName(),

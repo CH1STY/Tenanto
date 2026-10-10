@@ -1,6 +1,7 @@
 import { connectDB } from "@/lib/db";
 import { objectIdSchema } from "@/lib/validators/building";
 import { MonthMedia } from "@/models/MonthMedia";
+import { requirePublicAccess } from "@/lib/public-access";
 
 type RouteContext = {
   params: Promise<{ buildingId: string; mediaId: string }>;
@@ -15,8 +16,9 @@ function toBuffer(data: unknown): Buffer {
   return Buffer.from(data as ArrayBufferLike);
 }
 
-/** Serves the stored image bytes for a month attachment (viewable by anyone). */
+/** Serves attachment bytes to signed-in or PIN-authorized visitors. */
 export async function GET(_req: Request, context: RouteContext) {
+  await requirePublicAccess();
   const { buildingId, mediaId } = await context.params;
   if (
     !objectIdSchema.safeParse(buildingId).success ||
@@ -38,7 +40,7 @@ export async function GET(_req: Request, context: RouteContext) {
     headers: {
       "Content-Type": media.contentType || "image/jpeg",
       "Content-Length": String(body.byteLength),
-      "Cache-Control": "private, max-age=31536000, immutable",
+      "Cache-Control": "private, no-store",
     },
   });
 }

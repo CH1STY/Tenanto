@@ -46,6 +46,7 @@ services:
     environment:
       MONGODB_URI: ${MONGODB_URI:?set MONGODB_URI to an existing MongoDB replica set in your .env file}
       AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in your .env file}
+      PUBLIC_ACCESS_PIN: ${PUBLIC_ACCESS_PIN:?set a four-digit PUBLIC_ACCESS_PIN in your .env file}
       AUTH_URL: ${AUTH_URL:-http://localhost:3000}
       AUTH_TRUST_HOST: "true"
       NODE_ENV: production

@@ -14,6 +14,7 @@ import { shortDate } from "@/lib/dates";
 import { objectIdSchema } from "@/lib/validators/building";
 import { MonthlyPeriod } from "@/models/MonthlyPeriod";
 import { MonthMedia } from "@/models/MonthMedia";
+import { requirePublicAccess } from "@/lib/public-access";
 
 export type MediaItem = {
   id: string;
@@ -105,6 +106,7 @@ export async function loadMonthMedia(
   buildingId: string,
   monthYear: string,
 ): Promise<MediaItem[]> {
+  await requirePublicAccess();
   if (!objectIdSchema.safeParse(buildingId).success) return [];
   if (!MONTH_YEAR.test(monthYear)) return [];
   await connectDB();

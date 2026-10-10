@@ -4,6 +4,7 @@ import { connectDB } from "@/lib/db";
 import { Building } from "@/models/Building";
 import { ACTIVE_BUILDING_COOKIE } from "@/lib/active-building";
 import { objectIdSchema } from "@/lib/validators/building";
+import { requirePublicAccess } from "@/lib/public-access";
 
 const ONE_YEAR = 60 * 60 * 24 * 365;
 
@@ -12,6 +13,7 @@ type RouteContext = {
 };
 
 export async function GET(_req: Request, context: RouteContext) {
+  await requirePublicAccess();
   const { buildingId } = await context.params;
   const parsed = objectIdSchema.safeParse(buildingId);
   if (!parsed.success) redirect("/buildings");

@@ -29,6 +29,7 @@ set the same variables in your host/platform environment.
 | `MONGODB_URI`              | yes         | Mongo connection string. **Must point to a replica set** (transactions are used). |
 | `AUTH_SECRET`              | yes         | Secret used by Auth.js to encrypt sessions. Generate a strong random value.       |
 | `AUTH_URL`                 | production  | Canonical public URL of the app, e.g. `https://tenants.example.com`.              |
+| `PUBLIC_ACCESS_PIN`        | yes         | Shared four-digit website access PIN for logged-out visitors. Keep it private. |
 | `SEED_SUPERADMIN_NAME`     | for seeding | Display name for the initial SuperAdmin.                                          |
 | `SEED_SUPERADMIN_EMAIL`    | for seeding | Login email for the initial SuperAdmin.                                           |
 | `SEED_SUPERADMIN_PASSWORD` | for seeding | Initial password for the SuperAdmin (change after first login).                   |
@@ -42,6 +43,7 @@ MONGODB_URI="mongodb://127.0.0.1:27017/tenant_app?directConnection=true"
 # Generate one with: npx auth secret   (or: openssl rand -base64 32)
 AUTH_SECRET="replace-with-a-strong-random-secret"
 AUTH_URL="http://localhost:3000"
+PUBLIC_ACCESS_PIN="replace-with-your-private-four-digit-pin"
 
 # Used once by `npm run seed`
 SEED_SUPERADMIN_NAME="Super Admin"
@@ -50,6 +52,28 @@ SEED_SUPERADMIN_PASSWORD="ChangeMe!2026"
 ```
 
 > Do **not** commit `.env.local`. Generate a fresh `AUTH_SECRET` per environment.
+
+### Website access PIN
+
+Logged-out visitors must enter the shared four-digit `PUBLIC_ACCESS_PIN` at
+`/pin` before viewing the homepage, buildings, cash books, or attachments.
+The login page and Auth.js endpoints remain accessible; signed-in users
+bypass the PIN gate. A PIN grants viewing access only, not admin permissions.
+
+Successful entry sets a signed, HttpOnly, SameSite=Lax cookie for exactly
+**six hours from entry**, without extending it during browsing. Production
+cookies require HTTPS. Changing the PIN or `AUTH_SECRET` invalidates existing
+PIN cookies. Direct public Server Actions and attachment downloads also
+check access, and attachment responses are not cached.
+
+Because four-digit PINs are easy to guess, the app permits at most **20 PIN
+submissions per minute across all visitors and app instances**, using one
+atomic MongoDB counter. This includes successful submissions. If the limit
+is reached, wait one minute or sign in. MongoDB must be available and the app
+user needs read/write access to `public_pin_attempts`; database failures are
+surfaced as server errors, not accepted as successful PIN checks. A shared
+PIN is a lightweight viewing gate, not a substitute for individual accounts
+when stronger confidentiality is needed.
 
 ## Run locally
 
@@ -92,7 +116,7 @@ npm run db:reset && npm run db:up && npm run seed
    (`mongodb+srv://user:pass@cluster/tenant_app`).
 
 2. **Set environment variables** on the host/platform:
-   `MONGODB_URI`, `AUTH_SECRET`, `AUTH_URL`, and (for the one‑time seed)
+   `MONGODB_URI`, `AUTH_SECRET`, `AUTH_URL`, `PUBLIC_ACCESS_PIN`, and (for the one‑time seed)
    `SEED_SUPERADMIN_*`.
 
 3. **Build and start:**
@@ -126,7 +150,7 @@ npm run db:reset && npm run db:up && npm run seed
 
 ### Woodpecker CI and Docker deployment
 
-The root `.woodpecker.yml` runs `npm ci`, lint, TypeScript checks, and a
+The root `.woodpecker.yml` runs `npm ci`, lint, PIN access tests, TypeScript checks, and a
 production build on pushes to `main`, pull/merge requests targeting `main`,
 and manual runs on `main`. Pull/merge requests are validated only and never
 deploy. Successful pushes and manual runs on `main` build a Docker image and
@@ -158,6 +182,7 @@ Before enabling the pipeline:
    | `MONGODB_URI` | `mongodb://host.docker.internal:27017/tenant_app?replicaSet=rs0&directConnection=true` |
    | `AUTH_SECRET` | A strong random secret, stable across deployments |
    | `AUTH_URL` | `https://tenants.example.com` |
+   | `PUBLIC_ACCESS_PIN` | Your private PIN, exactly four digits (keep leading zeros) |
 
    Enter each raw value without dotenv assignments or surrounding quotes.
    No combined `env_file` secret is needed. Seed credentials are not used by
@@ -244,6 +269,7 @@ Notes:
 | `npm run build`     | Production build.                              |
 | `npm run start`     | Start the production server (after `build`).   |
 | `npm run lint`      | Run ESLint.                                    |
+| `npm test`          | Run PIN expiry, access, and attempt-limit tests. |
 | `npm run seed`      | Create the SuperAdmin + demo building.         |
 | `npm run db:up`     | Start local MongoDB (Docker).                  |
 | `npm run db:down`   | Stop local MongoDB.                            |

@@ -30,12 +30,14 @@ import {
 } from "@/lib/constants";
 import { objectIdSchema } from "@/lib/validators/building";
 import type { CashBookData } from "./cashbook";
+import { requirePublicAccess } from "@/lib/public-access";
 
 /** Read-only, fully serializable cash book for one building month (public view). */
 export async function loadCashBook(
   buildingId: string,
   monthYear: string,
 ): Promise<CashBookData | null> {
+  await requirePublicAccess();
   if (!objectIdSchema.safeParse(buildingId).success) return null;
   if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(monthYear)) return null;
 

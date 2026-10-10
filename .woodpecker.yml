@@ -15,6 +15,7 @@ steps:
     commands:
       - npm ci
       - npm run lint
+      - npm test
       - npx --no-install next typegen
       - npx --no-install tsc --noEmit
       - npm run build
@@ -40,12 +41,15 @@ steps:
         from_secret: AUTH_SECRET
       AUTH_URL:
         from_secret: AUTH_URL
+      PUBLIC_ACCESS_PIN:
+        from_secret: PUBLIC_ACCESS_PIN
     commands:
       - |
         set -eu
         : "$${MONGODB_URI:?Woodpecker secret MONGODB_URI must be set}"
         : "$${AUTH_SECRET:?Woodpecker secret AUTH_SECRET must be set}"
         : "$${AUTH_URL:?Woodpecker secret AUTH_URL must be set}"
+        : "$${PUBLIC_ACCESS_PIN:?Woodpecker secret PUBLIC_ACCESS_PIN must be set}"
         export APP_IMAGE="tenanto:$${CI_COMMIT_SHA}"
         docker compose --env-file /dev/null --project-name tenanto up \
           --detach --no-build --wait --wait-timeout 180 app

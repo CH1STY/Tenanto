@@ -6,6 +6,7 @@ import { connectDB } from "@/lib/db";
 import { Building } from "@/models/Building";
 import { getActiveBuildingId } from "@/lib/active-building";
 import { objectIdSchema } from "@/lib/validators/building";
+import { requirePublicAccess } from "@/lib/public-access";
 
 async function getActiveBuilding() {
   const id = await getActiveBuildingId();
@@ -16,6 +17,7 @@ async function getActiveBuilding() {
 }
 
 export default async function Home() {
+  await requirePublicAccess();
   const [user, activeBuilding] = await Promise.all([
     getCurrentUser(),
     getActiveBuilding(),
