@@ -133,6 +133,9 @@ deploy. Successful pushes and manual runs on `main` build a Docker image and
 deploy it on the Woodpecker agent's Docker host. Other branches do not trigger
 this workflow. No registry or SSH connection is needed.
 
+Before TypeScript checks, `next typegen` generates route definitions such as
+`LayoutProps`, which are not present in a fresh checkout.
+
 To run manually, use Woodpecker's new pipeline action and select the `main`
 branch. Manual runs execute all checks before building and deploying.
 

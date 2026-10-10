@@ -15,6 +15,7 @@ steps:
     commands:
       - npm ci
       - npm run lint
+      - npx --no-install next typegen
       - npx --no-install tsc --noEmit
       - npm run build
 
