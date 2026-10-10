@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useHydrated } from "@/components/use-hydrated";
 
 export type LightboxImage = { url: string; filename?: string };
 
@@ -22,10 +23,35 @@ export function ImageLightbox({
   onClose: () => void;
   onIndexChange: (i: number) => void;
 }) {
-  const [mounted, setMounted] = useState(false);
+  const hydrated = useHydrated();
+  if (!hydrated || index == null || !images[index]) return null;
+
+  return (
+    <LightboxViewer
+      key={index}
+      images={images}
+      index={index}
+      onClose={onClose}
+      onIndexChange={onIndexChange}
+    />
+  );
+}
+
+function LightboxViewer({
+  images,
+  index,
+  onClose,
+  onIndexChange,
+}: {
+  images: LightboxImage[];
+  index: number;
+  onClose: () => void;
+  onIndexChange: (i: number) => void;
+}) {
   const [scale, setScale] = useState(1);
   const [tx, setTx] = useState(0);
   const [ty, setTy] = useState(0);
+  const [interacting, setInteracting] = useState(false);
 
   const pointers = useRef<Map<number, { x: number; y: number }>>(new Map());
   const pinch = useRef<{ dist: number; scale: number } | null>(null);
@@ -33,29 +59,22 @@ export function ImageLightbox({
     null,
   );
 
-  const open = index != null;
   const count = images.length;
-  const current = open ? images[index] : null;
-
-  useEffect(() => setMounted(true), []);
+  const current = images[index];
 
   const reset = useCallback(() => {
     setScale(1);
     setTx(0);
     setTy(0);
+    setInteracting(false);
     pointers.current.clear();
     pinch.current = null;
     pan.current = null;
   }, []);
 
-  // Reset the transform whenever the shown image changes.
-  useEffect(() => {
-    reset();
-  }, [index, reset]);
-
   const go = useCallback(
     (dir: number) => {
-      if (index == null || count < 2) return;
+      if (count < 2) return;
       onIndexChange((index + dir + count) % count);
     },
     [index, count, onIndexChange],
@@ -63,7 +82,6 @@ export function ImageLightbox({
 
   // Lock page scroll and wire keyboard shortcuts while open.
   useEffect(() => {
-    if (!open) return;
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const onKey = (e: KeyboardEvent) => {
@@ -76,17 +94,15 @@ export function ImageLightbox({
       document.body.style.overflow = prev;
       window.removeEventListener("keydown", onKey);
     };
-  }, [open, onClose, go]);
+  }, [onClose, go]);
 
   function zoomBy(factor: number) {
-    setScale((s) => {
-      const next = clamp(s * factor, MIN_SCALE, MAX_SCALE);
-      if (next === 1) {
-        setTx(0);
-        setTy(0);
-      }
-      return next;
-    });
+    const next = clamp(scale * factor, MIN_SCALE, MAX_SCALE);
+    setScale(next);
+    if (next === 1) {
+      setTx(0);
+      setTy(0);
+    }
   }
 
   function onWheel(e: React.WheelEvent) {
@@ -109,6 +125,7 @@ export function ImageLightbox({
     } else if (scale > 1) {
       pan.current = { x: e.clientX, y: e.clientY, tx, ty };
     }
+    setInteracting(pan.current !== null || pinch.current !== null);
   }
 
   function onPointerMove(e: React.PointerEvent) {
@@ -141,9 +158,8 @@ export function ImageLightbox({
     pointers.current.delete(e.pointerId);
     if (pointers.current.size < 2) pinch.current = null;
     if (pointers.current.size === 0) pan.current = null;
+    setInteracting(pan.current !== null || pinch.current !== null);
   }
-
-  if (!mounted || !open || !current) return null;
 
   return createPortal(
     <div
@@ -161,7 +177,7 @@ export function ImageLightbox({
           {current.filename || "Attachment"}
           {count > 1 ? (
             <span className="ml-2 text-white/50">
-              {index! + 1} / {count}
+              {index + 1} / {count}
             </span>
           ) : null}
         </span>
@@ -212,8 +228,7 @@ export function ImageLightbox({
           style={{
             transform: `translate(${tx}px, ${ty}px) scale(${scale})`,
             cursor: scale > 1 ? "grab" : "default",
-            transition:
-              pan.current || pinch.current ? "none" : "transform 0.1s",
+            transition: interacting ? "none" : "transform 0.1s",
           }}
         />
 
