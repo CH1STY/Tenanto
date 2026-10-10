@@ -29,7 +29,7 @@ set the same variables in your host/platform environment.
 | `MONGODB_URI`              | yes         | Mongo connection string. **Must point to a replica set** (transactions are used). |
 | `AUTH_SECRET`              | yes         | Secret used by Auth.js to encrypt sessions. Generate a strong random value.       |
 | `AUTH_URL`                 | production  | Canonical public URL of the app, e.g. `https://tenants.example.com`.              |
-| `PUBLIC_ACCESS_PIN`        | yes         | Shared four-digit website access PIN for logged-out visitors. Keep it private. |
+| `PUBLIC_ACCESS_PIN`        | yes         | Shared four-digit website access PIN for logged-out visitors. Keep it private.    |
 | `SEED_SUPERADMIN_NAME`     | for seeding | Display name for the initial SuperAdmin.                                          |
 | `SEED_SUPERADMIN_EMAIL`    | for seeding | Login email for the initial SuperAdmin.                                           |
 | `SEED_SUPERADMIN_PASSWORD` | for seeding | Initial password for the SuperAdmin (change after first login).                   |
@@ -177,12 +177,12 @@ Before enabling the pipeline:
    for untrusted pull requests.
 3. Add these individual repository secrets (names are case-sensitive):
 
-   | Secret | Example value |
-   | ------ | ------------- |
-   | `MONGODB_URI` | `mongodb://host.docker.internal:27017/tenant_app?replicaSet=rs0&directConnection=true` |
-   | `AUTH_SECRET` | A strong random secret, stable across deployments |
-   | `AUTH_URL` | `https://tenants.example.com` |
-   | `PUBLIC_ACCESS_PIN` | Your private PIN, exactly four digits (keep leading zeros) |
+   | Secret              | Example value                                                                          |
+   | ------------------- | -------------------------------------------------------------------------------------- |
+   | `MONGODB_URI`       | `mongodb://host.docker.internal:27017/tenant_app?replicaSet=rs0&directConnection=true` |
+   | `AUTH_SECRET`       | A strong random secret, stable across deployments                                      |
+   | `AUTH_URL`          | `https://tenants.example.com`                                                          |
+   | `PUBLIC_ACCESS_PIN` | Your private PIN, exactly four digits (keep leading zeros)                             |
 
    Enter each raw value without dotenv assignments or surrounding quotes.
    No combined `env_file` secret is needed. Seed credentials are not used by
@@ -196,6 +196,7 @@ Before enabling the pipeline:
    firewall; restrict that access to trusted clients.
    Allow each secret for **push** and **manual** events, not pull requests.
    If using an image restriction, allow `docker:29-cli`.
+
 4. Enable **Cancel previous pipelines** for push events to avoid overlapping
    deployments of this repository. Do not run another deployment pipeline
    against the same Compose project concurrently, including manual runs.
@@ -263,17 +264,19 @@ Notes:
 
 ## Scripts
 
-| Script              | Description                                    |
-| ------------------- | ---------------------------------------------- |
-| `npm run dev`       | Start the development server.                  |
-| `npm run build`     | Production build.                              |
-| `npm run start`     | Start the production server (after `build`).   |
-| `npm run lint`      | Run ESLint.                                    |
+| Script              | Description                                      |
+| ------------------- | ------------------------------------------------ |
+| `npm run dev`       | Start the development server.                    |
+| `npm run build`     | Production build.                                |
+| `npm run start`     | Start the production server (after `build`).     |
+| `npm run lint`      | Run ESLint.                                      |
 | `npm test`          | Run PIN expiry, access, and attempt-limit tests. |
-| `npm run seed`      | Create the SuperAdmin + demo building.         |
-| `npm run db:up`     | Start local MongoDB (Docker).                  |
-| `npm run db:down`   | Stop local MongoDB.                            |
-| `npm run db:reset`  | Stop local MongoDB and delete its data volume. |
-| `npm run db:logs`   | Tail local MongoDB logs.                       |
-| `npm run setup`     | `db:up` + `seed`.                              |
-| `npm run start:all` | `db:up` + `seed` + `dev`.                      |
+| `npm run seed`      | Create the SuperAdmin + demo building.           |
+| `npm run db:up`     | Start local MongoDB (Docker).                    |
+| `npm run db:down`   | Stop local MongoDB.                              |
+| `npm run db:reset`  | Stop local MongoDB and delete its data volume.   |
+| `npm run db:logs`   | Tail local MongoDB logs.                         |
+| `npm run setup`     | `db:up` + `seed`.                                |
+| `npm run start:all` | `db:up` + `seed` + `dev`.                        |
+
+CI CD FLEX
