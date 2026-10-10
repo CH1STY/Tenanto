@@ -119,8 +119,9 @@ npm run db:reset && npm run db:up && npm run seed
 - Generate a strong `AUTH_SECRET` per environment (`npx auth secret` or
   `openssl rand -base64 32`).
 - A multi-stage Dockerfile builds the standalone server. Docker Compose can
-  run it with the bundled MongoDB replica set, or use an external replica set
-  via `MONGODB_URI`. You can also deploy on a Node host or on **Vercel**.
+  run it against an existing replica set via `MONGODB_URI`; only the app starts
+  by default. The bundled MongoDB is opt-in for local development via
+  `npm run db:up`. You can also deploy on a Node host or on **Vercel**.
 - `next start` respects the `PORT` environment variable.
 
 ### Woodpecker CI and Docker deployment
@@ -144,12 +145,17 @@ Before enabling the pipeline:
    production dotenv contents (not a filename or base64 string):
 
    ```dotenv
-   MONGODB_URI='mongodb://mongo:27017/tenant_app?replicaSet=rs0&directConnection=true'
+   MONGODB_URI='mongodb://host.docker.internal:27017/tenant_app?replicaSet=rs0&directConnection=true'
    AUTH_SECRET='replace-with-a-strong-random-secret'
    AUTH_URL='https://tenants.example.com'
    ```
 
-   Use the bundled MongoDB URI above or an external replica-set URI. Quote
+   Use the host MongoDB URI above, a reachable network IP/hostname, or an Atlas
+   replica-set URI. `localhost` inside the app container refers to the app
+   container, **not** the Docker host. The app and seed services map
+   `host.docker.internal` to the host gateway on Linux. Host MongoDB must
+   listen on a container-reachable interface and permit access through the
+   firewall; restrict that access to trusted clients. Quote
    values containing `$` with single quotes to prevent Compose interpolation.
    Allow the secret for **push** events only, not pull requests. If using an
    image restriction, allow `docker:29-cli`.
@@ -163,11 +169,13 @@ deploy step, passed to Compose, then removed on exit. Environment files are
 excluded from the Docker build context. Build checks use a non-secret MongoDB
 URI solely for import-time validation and do not connect to production.
 
-Deployment uses the stable Compose project name `tenanto`, preserves the
-MongoDB data volume, and waits for MongoDB and the app's `/login` health check.
+Deployment uses the stable Compose project name `tenanto`, starts **only the
+Next.js app**, and waits for the app's `/login` health check.
 A failed health check fails the pipeline; automatic rollback is not provided.
-The bundled MongoDB service is started even when using an external URI.
-For production, keep its published port 27017 restricted to trusted hosts.
+The login check verifies HTTP readiness, not database connectivity. MongoDB
+is managed separately and is never started by the deployment pipeline.
+If an earlier deployment already started `tenant-mongo`, this change does not
+stop or delete it; stop it separately only after migrating any required data.
 
 The pipeline does **not** seed or reset the database. Seed the first admin
 once using `docker compose --project-name tenanto --profile seed run --rm seed`

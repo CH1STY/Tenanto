@@ -1,22 +1,16 @@
-# Full Docker setup for the Tenant App.
+# Docker setup for the Tenant App. Only Next.js starts by default.
+# Set MONGODB_URI to an existing MongoDB replica set (host, network, or Atlas).
 #
-# The `app` service runs the Next.js production build. MongoDB can either be the
-# bundled `mongo` service (default) or any external/online database (e.g. Atlas)
-# by pointing MONGODB_URI at it and skipping the `mongo` service.
-#
-# Quick start (app + local Mongo):
+# Quick start (app + existing MongoDB):
 #   docker compose up -d --build
 #   docker compose --profile seed run --rm seed   # one-time: create SuperAdmin
 #
-# Using an external/online Mongo instead of the local container:
-#   Set MONGODB_URI in a .env file next to this file, then:
-#   docker compose up -d --build app
-#
-# The local `mongo` is a single-node replica set (rs0) so Mongoose multi-document
-# transactions work. The healthcheck initiates the replica set on first start.
+# Optional local-development MongoDB: npm run db:up
+# The local `mongo` is an opt-in single-node replica set (rs0).
 services:
   mongo:
     image: mongo:7
+    profiles: ["local-db"]
     container_name: tenant-mongo
     restart: unless-stopped
     ports:
@@ -47,10 +41,10 @@ services:
     restart: unless-stopped
     ports:
       - "3000:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
-      # directConnection is required because the local replica set advertises
-      # itself as localhost:27017; it is harmless for external/Atlas URIs.
-      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo:27017/tenant_app?replicaSet=rs0&directConnection=true}
+      MONGODB_URI: ${MONGODB_URI:?set MONGODB_URI to an existing MongoDB replica set in your .env file}
       AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in your .env file}
       AUTH_URL: ${AUTH_URL:-http://localhost:3000}
       AUTH_TRUST_HOST: "true"
@@ -67,11 +61,6 @@ services:
       timeout: 10s
       start_period: 30s
       retries: 10
-    depends_on:
-      mongo:
-        condition: service_healthy
-        required: false
-
   # One-off seeding job. Run with:
   #   docker compose --profile seed run --rm seed
   seed:
@@ -79,16 +68,13 @@ services:
       context: .
       target: seeder
     profiles: ["seed"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
-      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo:27017/tenant_app?replicaSet=rs0&directConnection=true}
+      MONGODB_URI: ${MONGODB_URI:?set MONGODB_URI to an existing MongoDB replica set in your .env file}
       SEED_SUPERADMIN_NAME: ${SEED_SUPERADMIN_NAME:-Super Admin}
       # The seed script validates these only when the one-off job runs.
       SEED_SUPERADMIN_EMAIL: ${SEED_SUPERADMIN_EMAIL:-}
       SEED_SUPERADMIN_PASSWORD: ${SEED_SUPERADMIN_PASSWORD:-}
-    depends_on:
-      mongo:
-        condition: service_healthy
-        required: false
-
 volumes:
   tenant-mongo-data:
