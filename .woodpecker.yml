@@ -34,18 +34,20 @@ steps:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      ENV_FILE:
-        from_secret: env_file
+      MONGODB_URI:
+        from_secret: MONGODB_URI
+      AUTH_SECRET:
+        from_secret: AUTH_SECRET
+      AUTH_URL:
+        from_secret: AUTH_URL
     commands:
       - |
         set -eu
-        : "$${ENV_FILE:?Woodpecker secret env_file must contain the production dotenv file}"
-        umask 077
-        trap 'rm -f .env' EXIT
-        printf '%s\n' "$${ENV_FILE}" > .env
-        unset ENV_FILE
+        : "$${MONGODB_URI:?Woodpecker secret MONGODB_URI must be set}"
+        : "$${AUTH_SECRET:?Woodpecker secret AUTH_SECRET must be set}"
+        : "$${AUTH_URL:?Woodpecker secret AUTH_URL must be set}"
         export APP_IMAGE="tenanto:$${CI_COMMIT_SHA}"
-        docker compose --env-file .env --project-name tenanto up \
+        docker compose --env-file /dev/null --project-name tenanto up \
           --detach --no-build --wait --wait-timeout 180 app
     when:
       - event: [push, manual]

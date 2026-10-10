@@ -146,32 +146,36 @@ Before enabling the pipeline:
    the build and deploy steps need the host Docker socket. This grants host
    control to pipeline code, so restrict push access and require approval
    for untrusted pull requests.
-3. Add a repository secret named **`env_file`** containing the complete
-   production dotenv contents (not a filename or base64 string):
+3. Add these individual repository secrets (names are case-sensitive):
 
-   ```dotenv
-   MONGODB_URI='mongodb://host.docker.internal:27017/tenant_app?replicaSet=rs0&directConnection=true'
-   AUTH_SECRET='replace-with-a-strong-random-secret'
-   AUTH_URL='https://tenants.example.com'
-   ```
+   | Secret | Example value |
+   | ------ | ------------- |
+   | `MONGODB_URI` | `mongodb://host.docker.internal:27017/tenant_app?replicaSet=rs0&directConnection=true` |
+   | `AUTH_SECRET` | A strong random secret, stable across deployments |
+   | `AUTH_URL` | `https://tenants.example.com` |
+
+   Enter each raw value without dotenv assignments or surrounding quotes.
+   No combined `env_file` secret is needed. Seed credentials are not used by
+   the pipeline.
 
    Use the host MongoDB URI above, a reachable network IP/hostname, or an Atlas
    replica-set URI. `localhost` inside the app container refers to the app
    container, **not** the Docker host. The app and seed services map
    `host.docker.internal` to the host gateway on Linux. Host MongoDB must
    listen on a container-reachable interface and permit access through the
-   firewall; restrict that access to trusted clients. Quote
-   values containing `$` with single quotes to prevent Compose interpolation.
-   Allow the secret for **push** and **manual** events, not pull requests.
+   firewall; restrict that access to trusted clients.
+   Allow each secret for **push** and **manual** events, not pull requests.
    If using an image restriction, allow `docker:29-cli`.
 4. Enable **Cancel previous pipelines** for push events to avoid overlapping
    deployments of this repository. Do not run another deployment pipeline
    against the same Compose project concurrently, including manual runs.
 
 The Docker image is tagged `tenanto:<commit SHA>`. Production environment
-values are written to a permission-restricted temporary `.env` only in the
-deploy step, passed to Compose, then removed on exit. Environment files are
-excluded from the Docker build context. Build checks use a non-secret MongoDB
+values are injected into the deploy step's environment from individual
+Woodpecker secrets and passed to Compose without writing a dotenv file.
+Compose uses `--env-file /dev/null` to ignore any workspace `.env`.
+Environment files are excluded from the Docker build context.
+Build checks use a non-secret MongoDB
 URI solely for import-time validation and do not connect to production.
 
 Deployment uses the stable Compose project name `tenanto`, starts **only the
