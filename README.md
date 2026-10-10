@@ -127,11 +127,14 @@ npm run db:reset && npm run db:up && npm run seed
 ### Woodpecker CI and Docker deployment
 
 The root `.woodpecker.yml` runs `npm ci`, lint, TypeScript checks, and a
-production build on pushes to `main` and pull/merge requests targeting `main`.
-Pull/merge requests are validated only and never deploy. Only successful
-pushes to `main` build a Docker image and deploy it on the Woodpecker agent's
-Docker host. Other branches do not trigger this workflow. No registry or SSH
-connection is needed.
+production build on pushes to `main`, pull/merge requests targeting `main`,
+and manual runs on `main`. Pull/merge requests are validated only and never
+deploy. Successful pushes and manual runs on `main` build a Docker image and
+deploy it on the Woodpecker agent's Docker host. Other branches do not trigger
+this workflow. No registry or SSH connection is needed.
+
+To run manually, use Woodpecker's new pipeline action and select the `main`
+branch. Manual runs execute all checks before building and deploying.
 
 Before enabling the pipeline:
 
@@ -159,11 +162,11 @@ Before enabling the pipeline:
    listen on a container-reachable interface and permit access through the
    firewall; restrict that access to trusted clients. Quote
    values containing `$` with single quotes to prevent Compose interpolation.
-   Allow the secret for **push** events only, not pull requests. If using an
-   image restriction, allow `docker:29-cli`.
+   Allow the secret for **push** and **manual** events, not pull requests.
+   If using an image restriction, allow `docker:29-cli`.
 4. Enable **Cancel previous pipelines** for push events to avoid overlapping
    deployments of this repository. Do not run another deployment pipeline
-   against the same Compose project concurrently.
+   against the same Compose project concurrently, including manual runs.
 
 The Docker image is tagged `tenanto:<commit SHA>`. Production environment
 values are written to a permission-restricted temporary `.env` only in the

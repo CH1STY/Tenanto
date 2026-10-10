@@ -1,5 +1,5 @@
 when:
-  - event: [push, pull_request]
+  - event: [push, pull_request, manual]
     branch: main
 
 labels:
@@ -26,7 +26,7 @@ steps:
     commands:
       - docker build --target runner --tag "tenanto:$${CI_COMMIT_SHA}" .
     when:
-      - event: push
+      - event: [push, manual]
         branch: main
 
   - name: deploy
@@ -48,5 +48,5 @@ steps:
         docker compose --env-file .env --project-name tenanto up \
           --detach --no-build --wait --wait-timeout 180 app
     when:
-      - event: push
+      - event: [push, manual]
         branch: main
