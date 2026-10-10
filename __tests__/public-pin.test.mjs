@@ -9,7 +9,7 @@ const nodeRequire = createRequire(import.meta.url);
 const root = path.resolve(import.meta.dirname, "..");
 
 function load(relativePath, dependencies = {}) {
-  const filename = path.join(root, relativePath);
+  const filename = path.join(root, ...relativePath.split(/[\\/]/));
   const compiled = ts.transpileModule(readFileSync(filename, "utf8"), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
   });
