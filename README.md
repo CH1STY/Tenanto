@@ -118,9 +118,61 @@ npm run db:reset && npm run db:up && npm run seed
 - Serve behind **HTTPS** and set `AUTH_URL` to the public URL.
 - Generate a strong `AUTH_SECRET` per environment (`npx auth secret` or
   `openssl rand -base64 32`).
-- No Dockerfile is included; deploy on any Node host with `npm run build` +
-  `npm run start`, or on **Vercel** (set the env vars and use MongoDB Atlas).
+- A multi-stage Dockerfile builds the standalone server. Docker Compose can
+  run it with the bundled MongoDB replica set, or use an external replica set
+  via `MONGODB_URI`. You can also deploy on a Node host or on **Vercel**.
 - `next start` respects the `PORT` environment variable.
+
+### Woodpecker CI and Docker deployment
+
+The root `.woodpecker.yml` runs `npm ci`, lint, TypeScript checks, and a
+production build on pushes and pull requests. Only successful pushes to
+`main` build a Docker image and deploy it on the Woodpecker agent's Docker
+host. No registry or SSH connection is needed.
+
+Before enabling the pipeline:
+
+1. Use a **Linux Docker-backend agent** on the deployment host. Set its
+   `WOODPECKER_AGENT_LABELS` to include `deployment=tenanto` so deployments
+   always reach the same host. The host must provide
+   `/var/run/docker.sock`, and port **3000** must be available.
+2. Have a Woodpecker administrator enable **Trusted** for this repository;
+   the build and deploy steps need the host Docker socket. This grants host
+   control to pipeline code, so restrict push access and require approval
+   for untrusted pull requests.
+3. Add a repository secret named **`env_file`** containing the complete
+   production dotenv contents (not a filename or base64 string):
+
+   ```dotenv
+   MONGODB_URI='mongodb://mongo:27017/tenant_app?replicaSet=rs0&directConnection=true'
+   AUTH_SECRET='replace-with-a-strong-random-secret'
+   AUTH_URL='https://tenants.example.com'
+   ```
+
+   Use the bundled MongoDB URI above or an external replica-set URI. Quote
+   values containing `$` with single quotes to prevent Compose interpolation.
+   Allow the secret for **push** events only, not pull requests. If using an
+   image restriction, allow `docker:29-cli`.
+4. Enable **Cancel previous pipelines** for push events to avoid overlapping
+   deployments of this repository. Do not run another deployment pipeline
+   against the same Compose project concurrently.
+
+The Docker image is tagged `tenanto:<commit SHA>`. Production environment
+values are written to a permission-restricted temporary `.env` only in the
+deploy step, passed to Compose, then removed on exit. Environment files are
+excluded from the Docker build context. Build checks use a non-secret MongoDB
+URI solely for import-time validation and do not connect to production.
+
+Deployment uses the stable Compose project name `tenanto`, preserves the
+MongoDB data volume, and waits for MongoDB and the app's `/login` health check.
+A failed health check fails the pipeline; automatic rollback is not provided.
+The bundled MongoDB service is started even when using an external URI.
+For production, keep its published port 27017 restricted to trusted hosts.
+
+The pipeline does **not** seed or reset the database. Seed the first admin
+once using `docker compose --project-name tenanto --profile seed run --rm seed`
+on the host with the production environment and `SEED_SUPERADMIN_*` values
+available. The host needs a checkout of the project for this one-time command.
 
 ## Roles & first steps
 

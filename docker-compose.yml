@@ -1,7 +1,19 @@
-# Local MongoDB for development.
-# Single-node replica set so Mongoose multi-document transactions work
-# (needed later for the unit-reassignment flow). The healthcheck initiates
-# the replica set automatically on first start.
+# Full Docker setup for the Tenant App.
+#
+# The `app` service runs the Next.js production build. MongoDB can either be the
+# bundled `mongo` service (default) or any external/online database (e.g. Atlas)
+# by pointing MONGODB_URI at it and skipping the `mongo` service.
+#
+# Quick start (app + local Mongo):
+#   docker compose up -d --build
+#   docker compose --profile seed run --rm seed   # one-time: create SuperAdmin
+#
+# Using an external/online Mongo instead of the local container:
+#   Set MONGODB_URI in a .env file next to this file, then:
+#   docker compose up -d --build app
+#
+# The local `mongo` is a single-node replica set (rs0) so Mongoose multi-document
+# transactions work. The healthcheck initiates the replica set on first start.
 services:
   mongo:
     image: mongo:7
@@ -25,6 +37,58 @@ services:
       timeout: 30s
       start_period: 5s
       retries: 30
+
+  app:
+    image: ${APP_IMAGE:-tenant-app-app}
+    build:
+      context: .
+      target: runner
+    container_name: tenant-app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # directConnection is required because the local replica set advertises
+      # itself as localhost:27017; it is harmless for external/Atlas URIs.
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo:27017/tenant_app?replicaSet=rs0&directConnection=true}
+      AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in your .env file}
+      AUTH_URL: ${AUTH_URL:-http://localhost:3000}
+      AUTH_TRUST_HOST: "true"
+      NODE_ENV: production
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/login', { signal: AbortSignal.timeout(5000), redirect: 'manual' }).then(r => { if (r.status !== 200) throw new Error('Health check HTTP ' + r.status); }).catch(error => { console.error(error); process.exit(1); })",
+        ]
+      interval: 10s
+      timeout: 10s
+      start_period: 30s
+      retries: 10
+    depends_on:
+      mongo:
+        condition: service_healthy
+        required: false
+
+  # One-off seeding job. Run with:
+  #   docker compose --profile seed run --rm seed
+  seed:
+    build:
+      context: .
+      target: seeder
+    profiles: ["seed"]
+    environment:
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo:27017/tenant_app?replicaSet=rs0&directConnection=true}
+      SEED_SUPERADMIN_NAME: ${SEED_SUPERADMIN_NAME:-Super Admin}
+      # The seed script validates these only when the one-off job runs.
+      SEED_SUPERADMIN_EMAIL: ${SEED_SUPERADMIN_EMAIL:-}
+      SEED_SUPERADMIN_PASSWORD: ${SEED_SUPERADMIN_PASSWORD:-}
+    depends_on:
+      mongo:
+        condition: service_healthy
+        required: false
 
 volumes:
   tenant-mongo-data:

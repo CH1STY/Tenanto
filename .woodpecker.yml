@@ -1,0 +1,51 @@
+when:
+  - event: [push, pull_request]
+
+labels:
+  backend: docker
+  deployment: tenanto
+
+steps:
+  - name: checks
+    image: node:22-alpine
+    environment:
+      NEXT_TELEMETRY_DISABLED: "1"
+      # Build-time validation only; production values are supplied at runtime.
+      MONGODB_URI: mongodb://127.0.0.1:27017/tenant_app
+    commands:
+      - npm ci
+      - npm run lint
+      - npx --no-install tsc --noEmit
+      - npm run build
+
+  - name: docker-build
+    image: docker:29-cli
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    commands:
+      - docker build --target runner --tag "tenanto:$${CI_COMMIT_SHA}" .
+    when:
+      - event: push
+        branch: main
+
+  - name: deploy
+    image: docker:29-cli
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      ENV_FILE:
+        from_secret: env_file
+    commands:
+      - |
+        set -eu
+        : "$${ENV_FILE:?Woodpecker secret env_file must contain the production dotenv file}"
+        umask 077
+        trap 'rm -f .env' EXIT
+        printf '%s\n' "$${ENV_FILE}" > .env
+        unset ENV_FILE
+        export APP_IMAGE="tenanto:$${CI_COMMIT_SHA}"
+        docker compose --env-file .env --project-name tenanto up \
+          --detach --no-build --wait --wait-timeout 180 app
+    when:
+      - event: push
+        branch: main
