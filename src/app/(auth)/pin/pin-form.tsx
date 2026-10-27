@@ -23,7 +23,7 @@ export function PinForm({ returnTo }: { returnTo: string }) {
           <p className="text-lg font-bold tracking-tight">Tenant App</p>
           <h1 className="mt-6 text-2xl font-semibold">Enter access PIN</h1>
           <p className="mt-2 text-sm text-black/55 dark:text-white/55">
-            Enter the shared four-digit PIN to view the website for six hours,
+            Enter the access PIN to view the website for six hours,
             or sign in to continue without a PIN.
           </p>
         </div>
@@ -38,9 +38,9 @@ export function PinForm({ returnTo }: { returnTo: string }) {
               name="pin"
               type="password"
               inputMode="numeric"
-              pattern="[0-9]{4}"
+              pattern="[0-9]{4,12}"
               minLength={4}
-              maxLength={4}
+              maxLength={12}
               autoComplete="off"
               required
               className="h-11 w-full rounded-md border border-black/15 bg-transparent px-3 text-center text-lg tracking-widest outline-none focus:border-black/40 dark:border-white/20 dark:focus:border-white/50"

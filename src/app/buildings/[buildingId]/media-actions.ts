@@ -137,9 +137,11 @@ export async function uploadMonthMedia(
   }
 
   const period = await MonthlyPeriod.findOne({ buildingId, monthYear })
-    .select("_id")
+    .select("_id status")
     .lean();
-  if (!period) return { error: "That month is not open." };
+  if (!period || period.status !== PERIOD_STATUS.OPEN) {
+    return { error: "That month is not open." };
+  }
 
   const file = formData.get("file");
   if (!(file instanceof File) || file.size === 0) {

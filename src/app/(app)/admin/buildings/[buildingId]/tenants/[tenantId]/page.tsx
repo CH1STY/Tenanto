@@ -1,7 +1,12 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { getCurrentUser, userManagesBuilding } from "@/lib/rbac";
-import { ROLES, CHARGE_CATEGORY, CHARGE_STATUS } from "@/lib/constants";
+import {
+  ROLES,
+  CHARGE_CATEGORY,
+  CHARGE_STATUS,
+  PERIOD_STATUS,
+} from "@/lib/constants";
 import { connectDB } from "@/lib/db";
 import { Building } from "@/models/Building";
 import { Unit } from "@/models/Unit";
@@ -9,6 +14,8 @@ import { User } from "@/models/User";
 import { Tenancy } from "@/models/Tenancy";
 import { Charge } from "@/models/Charge";
 import { Payment } from "@/models/Payment";
+import { MonthlyPeriod } from "@/models/MonthlyPeriod";
+import { currentMonthYear } from "@/lib/dates";
 import { objectIdSchema } from "@/lib/validators/building";
 import { ConfirmSubmit } from "@/components/confirm-submit";
 import { vacateUnit, setTenantActive, deleteCharge } from "../actions";
@@ -48,7 +55,7 @@ export default async function TenantProfilePage(props: {
   }).lean();
   if (!tenant) notFound();
 
-  const [tenancies, charges, payments] = await Promise.all([
+  const [tenancies, charges, payments, openPeriod] = await Promise.all([
     Tenancy.find({ buildingId, userId: tenantId })
       .sort({ createdAt: -1 })
       .lean(),
@@ -58,7 +65,13 @@ export default async function TenantProfilePage(props: {
     Payment.find({ buildingId, userId: tenantId })
       .sort({ receivedAt: -1 })
       .lean(),
+    MonthlyPeriod.findOne({ buildingId, status: PERIOD_STATUS.OPEN })
+      .select("monthYear")
+      .lean(),
   ]);
+
+  // Managers may only view tenants who have lived in this building.
+  if (user.role !== ROLES.SUPER_ADMIN && tenancies.length === 0) notFound();
 
   const unitIds = [...new Set(tenancies.map((t) => String(t.unitId)))];
   const units = await Unit.find({ _id: { $in: unitIds } })
@@ -79,7 +92,8 @@ export default async function TenantProfilePage(props: {
   const totalBilled = charges.reduce((sum, c) => sum + c.amount, 0);
   const totalPaid = charges.reduce((sum, c) => sum + c.paidAmount, 0);
 
-  const thisMonth = new Date().toISOString().slice(0, 7);
+  // Default forms to the open cash-book month (dues/payments must go there).
+  const thisMonth = openPeriod?.monthYear ?? currentMonthYear();
 
   return (
     <div className="space-y-10">

@@ -16,14 +16,38 @@ import {
   CHARGE_CATEGORY,
   CHARGE_STATUS,
   EXPENSE_STATUS,
+  PERIOD_STATUS,
 } from "@/lib/constants";
 import { monthLabel, currentMonthYear } from "@/lib/dates";
 import { compareUnitLabels } from "@/lib/units";
 import { setActiveBuilding } from "../actions";
 import { MonthlyCashBook } from "./cashbook";
 import { loadCashBook } from "./cashbook-actions";
+import {
+  MonthSummary,
+  WhoPaidBoard,
+  type BoardRow,
+  type PayState,
+} from "./status-board";
 
 const money = (n: number) => n.toLocaleString();
+
+// Collapsible secondary sections so the page leads with the month's status.
+const SECTION = "mt-8 no-print";
+const SUMMARY =
+  "flex cursor-pointer list-none flex-wrap items-baseline justify-between gap-2 rounded-md py-1 [&::-webkit-details-marker]:hidden focus-visible:outline-2 focus-visible:outline-offset-2";
+const H2 =
+  "inline-flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-black/50 dark:text-white/50";
+function Chevron() {
+  return (
+    <span
+      aria-hidden
+      className="inline-block text-xs transition-transform group-open:rotate-90"
+    >
+      ▸
+    </span>
+  );
+}
 
 export default async function BuildingDetailPage(props: {
   params: Promise<{ buildingId: string }>;
@@ -75,24 +99,85 @@ export default async function BuildingDetailPage(props: {
   const unitLabel = new Map(units.map((u) => [String(u._id), u.label]));
   const userName = new Map(users.map((u) => [String(u._id), u.name]));
 
-  // Service-charge status for the current month, one row per active tenant.
-  const scStatus = activeTenancies
-    .map((t) => {
-      const sc = currentPeriod
-        ? allCharges.find(
+  const tenancyById = new Map(tenancies.map((t) => [String(t._id), t]));
+  const chargesByTenancy = new Map<string, typeof allCharges>();
+  for (const c of allCharges) {
+    const k = String(c.tenancyId);
+    const list = chargesByTenancy.get(k) ?? [];
+    list.push(c);
+    chargesByTenancy.set(k, list);
+  }
+
+  // "Who has paid" for the current month. A tenant's status for the month is
+  // based on the charges billed for that month (service charge, bills, other)
+  // — not the service charge alone — so "Paid" means nothing billed this month
+  // is left. Previous dues (old debt recorded in any month) and unpaid charges
+  // from other months are shown separately as arrears. Rows: every active tenancy, plus
+  // any past tenancy that was charged this month.
+  const curYm = currentPeriod?.monthYear ?? null;
+  const boardTenancies = curYm
+    ? tenancies.filter(
+        (t) =>
+          t.isActive ||
+          (chargesByTenancy.get(String(t._id)) ?? []).some(
             (c) =>
-              String(c.tenancyId) === String(t._id) &&
-              c.monthYear === currentPeriod.monthYear &&
-              c.category === CHARGE_CATEGORY.SERVICE_CHARGE,
-          )
-        : undefined;
+              c.monthYear === curYm &&
+              c.category !== CHARGE_CATEGORY.PREVIOUS_DUE,
+          ),
+      )
+    : activeTenancies;
+  const boardRows: BoardRow[] = boardTenancies
+    .map((t) => {
+      const charges = chargesByTenancy.get(String(t._id)) ?? [];
+      const isThisMonth = (c: (typeof charges)[number]) =>
+        c.monthYear === curYm && c.category !== CHARGE_CATEGORY.PREVIOUS_DUE;
+      const month = curYm ? charges.filter(isThisMonth) : [];
+      const due = month.reduce((s, c) => s + c.amount, 0);
+      const paid = month.reduce(
+        (s, c) => s + Math.min(c.amount, Math.max(0, c.paidAmount)),
+        0,
+      );
+      const arrears = charges
+        .filter((c) => !isThisMonth(c) && c.status !== CHARGE_STATUS.PAID)
+        .reduce((s, c) => s + Math.max(0, c.amount - c.paidAmount), 0);
+      const state: PayState =
+        due <= 0
+          ? "NONE"
+          : paid >= due
+            ? "PAID"
+            : paid > 0
+              ? "PARTIAL"
+              : "UNPAID";
       return {
+        key: String(t._id),
         unit: unitLabel.get(String(t.unitId)) ?? "?",
         name: userName.get(String(t.userId)) ?? "Tenant",
-        sc,
+        isPastTenant: !t.isActive,
+        due,
+        paid,
+        state,
+        arrears,
+        breakdown: month.map((c) => ({
+          id: String(c._id),
+          description:
+            c.category === CHARGE_CATEGORY.SERVICE_CHARGE
+              ? "Service charge"
+              : c.description,
+          amount: c.amount,
+          paid: Math.min(c.amount, Math.max(0, c.paidAmount)),
+        })),
       };
     })
     .sort((a, b) => compareUnitLabels(a.unit, b.unit));
+  const stateCounts: Record<PayState, number> = {
+    PAID: 0,
+    PARTIAL: 0,
+    UNPAID: 0,
+    NONE: 0,
+  };
+  for (const r of boardRows) stateCounts[r.state] += 1;
+  const monthBilled = boardRows.reduce((s, r) => s + r.due, 0);
+  const monthCollected = boardRows.reduce((s, r) => s + r.paid, 0);
 
   // Outstanding dues (any month, any category), grouped per tenant — including
   // tenants who have since detached but still owe money.
@@ -108,7 +193,7 @@ export default async function BuildingDetailPage(props: {
   >();
   for (const c of allCharges) {
     if (c.status === CHARGE_STATUS.PAID) continue;
-    const t = tenancies.find((x) => String(x._id) === String(c.tenancyId));
+    const t = tenancyById.get(String(c.tenancyId));
     if (!t) continue;
     const key = String(t._id);
     const entry = duesByTenancy.get(key) ?? {
@@ -200,14 +285,22 @@ export default async function BuildingDetailPage(props: {
           </p>
         </div>
 
-        <div className="flex flex-col items-end gap-2">
+        <div className="flex flex-col items-start gap-2 sm:items-end">
           {canManage ? (
-            <Link
-              href={`/admin/buildings/${buildingId}`}
-              className="inline-flex h-9 items-center justify-center rounded-md bg-foreground px-4 text-sm font-medium text-background hover:opacity-90"
-            >
-              Manage building
-            </Link>
+            <div className="flex gap-2">
+              <Link
+                href={`/admin/buildings/${buildingId}/ledger`}
+                className="inline-flex h-9 items-center justify-center rounded-md bg-foreground px-4 text-sm font-medium text-background hover:opacity-90"
+              >
+                Edit cash book
+              </Link>
+              <Link
+                href={`/admin/buildings/${buildingId}/tenants`}
+                className="inline-flex h-9 items-center justify-center rounded-md border border-black/15 px-4 text-sm font-medium hover:bg-black/4 dark:border-white/20 dark:hover:bg-white/10"
+              >
+                Tenants
+              </Link>
+            </div>
           ) : null}
           {isActive ? (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-green-500/15 px-3 py-1 text-sm font-medium text-green-700 dark:text-green-400">
@@ -228,87 +321,60 @@ export default async function BuildingDetailPage(props: {
         </div>
       </div>
 
-      {/* Service charge status — current month */}
-      <section className="mt-8 no-print">
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-black/50 dark:text-white/50">
-            Service charge
-          </h2>
-          {currentPeriod ? (
-            <span className="text-xs text-black/50 dark:text-white/50">
-              {monthLabel(currentPeriod.monthYear)}
+      {/* Current month at a glance */}
+      {currentPeriod ? (
+        <>
+          <MonthSummary
+            monthName={monthLabel(currentPeriod.monthYear)}
+            isClosed={currentPeriod.status === PERIOD_STATUS.CLOSED}
+            fallbackNote={
+              currentPeriod.monthYear !== nowYm
+                ? `${monthLabel(nowYm)} hasn't been opened yet — showing the latest month.`
+                : null
+            }
+            collected={monthCollected}
+            billed={monthBilled}
+            counts={stateCounts}
+            totalOutstanding={totalDue}
+          />
+          <WhoPaidBoard
+            monthName={monthLabel(currentPeriod.monthYear)}
+            rows={boardRows}
+          />
+        </>
+      ) : (
+        <section className="mt-6 rounded-xl border border-dashed border-black/15 p-5 text-sm text-black/55 dark:border-white/20 dark:text-white/55 no-print">
+          No month has been opened yet, so there is no payment status to show.
+          {totalDue > 0 ? (
+            <span className="mt-1 block font-medium text-red-600 dark:text-red-400">
+              Total outstanding dues: {money(totalDue)}
             </span>
           ) : null}
-        </div>
-
-        {!currentPeriod ? (
-          <p className="mt-3 text-sm text-black/55 dark:text-white/55">
-            No month has been opened yet.
-          </p>
-        ) : scStatus.length === 0 ? (
-          <p className="mt-3 text-sm text-black/55 dark:text-white/55">
-            No active tenants.
-          </p>
-        ) : (
-          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {scStatus.map((r) => {
-              const remaining = r.sc ? r.sc.amount - r.sc.paidAmount : 0;
-              const state = !r.sc
-                ? {
-                    label: "Not charged",
-                    cls: "text-black/45 dark:text-white/45",
-                  }
-                : r.sc.status === CHARGE_STATUS.PAID
-                  ? { label: "Paid", cls: "text-green-600 dark:text-green-400" }
-                  : r.sc.status === CHARGE_STATUS.PARTIAL
-                    ? {
-                        label: `Partial · ${money(remaining)} left`,
-                        cls: "text-red-600 dark:text-red-400",
-                      }
-                    : {
-                        label: `Due ${money(remaining)}`,
-                        cls: "text-red-600 dark:text-red-400",
-                      };
-              return (
-                <div
-                  key={`${r.unit}-${r.name}`}
-                  className="flex items-center justify-between rounded-lg border border-black/10 px-4 py-3 dark:border-white/15"
-                >
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium">
-                      {r.unit} · {r.name}
-                    </div>
-                    {r.sc ? (
-                      <div className="mt-0.5 text-xs text-black/50 dark:text-white/50">
-                        Total {money(r.sc.amount)}
-                        {r.sc.paidAmount > 0
-                          ? ` · Paid ${money(r.sc.paidAmount)}`
-                          : ""}
-                      </div>
-                    ) : null}
-                  </div>
-                  <span className={`shrink-0 text-xs font-medium ${state.cls}`}>
-                    {state.label}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
+        </section>
+      )}
 
       {/* Outstanding dues */}
-      <section className="mt-8 no-print">
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-black/50 dark:text-white/50">
+      <details className={`${SECTION} group`}>
+        <summary className={SUMMARY}>
+          <h2 className={H2}>
+            <Chevron />
             Outstanding dues
+            {dueRows.length > 0 ? (
+              <span className="ml-1 normal-case tracking-normal">
+                ({dueRows.length} tenant{dueRows.length === 1 ? "" : "s"})
+              </span>
+            ) : null}
           </h2>
           {totalDue > 0 ? (
             <span className="text-xs font-medium text-red-600 dark:text-red-400">
               Total {money(totalDue)}
             </span>
-          ) : null}
-        </div>
+          ) : (
+            <span className="text-xs text-green-700 dark:text-green-400">
+              All clear
+            </span>
+          )}
+        </summary>
 
         {dueRows.length === 0 ? (
           <p className="mt-3 text-sm text-black/55 dark:text-white/55">
@@ -356,12 +422,13 @@ export default async function BuildingDetailPage(props: {
             ))}
           </div>
         )}
-      </section>
+      </details>
 
       {/* Due expenses (building payables) */}
-      <section className="mt-8 no-print">
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-black/50 dark:text-white/50">
+      <details className={`${SECTION} group`}>
+        <summary className={SUMMARY}>
+          <h2 className={H2}>
+            <Chevron />
             Due expenses
           </h2>
           {totalDueExpenses > 0 ? (
@@ -369,7 +436,7 @@ export default async function BuildingDetailPage(props: {
               Total {money(totalDueExpenses)}
             </span>
           ) : null}
-        </div>
+        </summary>
 
         {dueExpenses.length === 0 ? (
           <p className="mt-3 text-sm text-black/55 dark:text-white/55">
@@ -418,12 +485,13 @@ export default async function BuildingDetailPage(props: {
             ))}
           </div>
         )}
-      </section>
+      </details>
 
       {/* Withdrawals + repayment history */}
-      <section className="mt-8 no-print">
-        <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-black/50 dark:text-white/50">
+      <details className={`${SECTION} group`}>
+        <summary className={SUMMARY}>
+          <h2 className={H2}>
+            <Chevron />
             Withdrawals
           </h2>
           {totalWithdrawn > 0 ? (
@@ -436,7 +504,7 @@ export default async function BuildingDetailPage(props: {
               ) : null}
             </span>
           ) : null}
-        </div>
+        </summary>
 
         {withdrawalRows.length === 0 ? (
           <p className="mt-3 text-sm text-black/55 dark:text-white/55">
@@ -498,7 +566,7 @@ export default async function BuildingDetailPage(props: {
             ))}
           </div>
         )}
-      </section>
+      </details>
 
       {/* Monthwise cash book */}
       <section className="mt-8">
@@ -523,10 +591,16 @@ export default async function BuildingDetailPage(props: {
         )}
       </section>
 
-      <div className="no-print">
-        <h2 className="mt-8 text-sm font-semibold uppercase tracking-wide text-black/50 dark:text-white/50">
-          Floors &amp; units
-        </h2>
+      <details className={`${SECTION} group`}>
+        <summary className={SUMMARY}>
+          <h2 className={H2}>
+            <Chevron />
+            Floors &amp; units
+          </h2>
+          <span className="text-xs text-black/50 dark:text-white/50">
+            {units.length} unit{units.length === 1 ? "" : "s"}
+          </span>
+        </summary>
 
         {units.length === 0 ? (
           <div className="mt-4 rounded-lg border border-dashed border-black/15 p-10 text-center text-black/55 dark:border-white/20 dark:text-white/55">
@@ -558,7 +632,7 @@ export default async function BuildingDetailPage(props: {
             ))}
           </div>
         )}
-      </div>
+      </details>
     </div>
   );
 }

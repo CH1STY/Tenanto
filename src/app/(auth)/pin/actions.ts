@@ -10,7 +10,11 @@ import {
   PUBLIC_PIN_MAX_AGE,
   safePinReturnTo,
 } from "@/lib/public-pin";
-import { consumePublicPinAttempt } from "@/lib/public-pin-attempts";
+import {
+  pinLockoutMessage,
+  publicPinRetryAfter,
+  recordFailedPublicPinAttempt,
+} from "@/lib/public-pin-attempts";
 
 export type PinState = { error: string | null };
 
@@ -22,11 +26,15 @@ export async function unlockPublicPages(
   const session = await auth();
   if (session?.user?.id) redirect(returnTo);
 
-  const valid = matchesPublicPin(formData.get("pin"));
-  if (!(await consumePublicPinAttempt())) {
-    return { error: "Too many PIN attempts. Please try again in one minute." };
+  // Validate first: only failures consume the shared budget. A correct PIN is
+  // still refused during a lockout so a brute-forcer cannot confirm a hit.
+  if (!matchesPublicPin(formData.get("pin"))) {
+    const wait = await recordFailedPublicPinAttempt();
+    if (wait > 0) return { error: pinLockoutMessage(wait) };
+    return { error: "Incorrect PIN. Enter the access PIN." };
   }
-  if (!valid) return { error: "Incorrect PIN. Enter the four-digit access PIN." };
+  const wait = await publicPinRetryAfter();
+  if (wait > 0) return { error: pinLockoutMessage(wait) };
 
   (await cookies()).set(PUBLIC_PIN_COOKIE, createPublicPinToken(), {
     httpOnly: true,

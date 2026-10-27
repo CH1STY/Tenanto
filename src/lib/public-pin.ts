@@ -1,13 +1,20 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  timingSafeEqual,
+} from "node:crypto";
 
 export const PUBLIC_PIN_COOKIE = "tenant-public-access";
 export const PUBLIC_PIN_MAX_AGE = 6 * 60 * 60;
+// 4-12 digits: the owner can move to a longer PIN by changing the env value only.
+const PIN_FORMAT = /^\d{4,12}$/;
 
 function configuration() {
   const pin = process.env.PUBLIC_ACCESS_PIN;
   const secret = process.env.AUTH_SECRET;
-  if (!pin || !/^\d{4}$/.test(pin)) {
-    throw new Error("PUBLIC_ACCESS_PIN must be exactly four digits.");
+  if (!pin || !PIN_FORMAT.test(pin)) {
+    throw new Error("PUBLIC_ACCESS_PIN must be 4 to 12 digits.");
   }
   if (!secret) throw new Error("AUTH_SECRET is required for PIN access.");
   return { pin, secret };
@@ -22,11 +29,10 @@ function signature(payload: string) {
 
 export function matchesPublicPin(value: unknown): boolean {
   const { pin } = configuration();
-  return (
-    typeof value === "string" &&
-    /^\d{4}$/.test(value) &&
-    timingSafeEqual(Buffer.from(value), Buffer.from(pin))
-  );
+  if (typeof value !== "string" || !PIN_FORMAT.test(value)) return false;
+  // Compare fixed-length digests so differing lengths neither throw nor leak.
+  const digest = (input: string) => createHash("sha256").update(input).digest();
+  return timingSafeEqual(digest(value), digest(pin));
 }
 
 export function createPublicPinToken(now = Date.now()): string {

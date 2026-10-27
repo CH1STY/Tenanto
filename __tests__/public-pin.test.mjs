@@ -4,6 +4,7 @@ import Module, { createRequire } from "node:module";
 import path from "node:path";
 import test from "node:test";
 import ts from "typescript";
+import { fakeCollection, fakeDb } from "./helpers/fake-mongo.mjs";
 
 const nodeRequire = createRequire(import.meta.url);
 const root = path.resolve(import.meta.dirname, "..");
@@ -31,9 +32,25 @@ function configure() {
 test("PIN matching preserves leading zeros and rejects invalid input", () => {
   configure();
   assert.equal(pin.matchesPublicPin("0427"), true);
-  for (const value of ["427", "0000", "04270", " 0427", 427, null]) {
+  for (const value of ["427", "0000", "04270", " 0427", "0427a", "1234567890123", 427, null]) {
     assert.equal(pin.matchesPublicPin(value), false);
   }
+});
+
+test("longer PINs of up to 12 digits work by changing only the env value", () => {
+  configure();
+  const fourDigitToken = pin.createPublicPinToken(now);
+  process.env.PUBLIC_ACCESS_PIN = "004271234567";
+  assert.equal(pin.matchesPublicPin("004271234567"), true);
+  assert.equal(pin.matchesPublicPin("0427"), false);
+  assert.equal(pin.matchesPublicPin("00427123456"), false);
+  assert.equal(pin.hasValidPublicPin(fourDigitToken, now), false);
+  for (const invalid of ["123", "1234567890123", "12ab"]) {
+    process.env.PUBLIC_ACCESS_PIN = invalid;
+    assert.throws(() => pin.matchesPublicPin("1234"), /PUBLIC_ACCESS_PIN/);
+  }
+  configure();
+  assert.equal(pin.hasValidPublicPin(fourDigitToken, now), true);
 });
 
 test("signed access expires at exactly six hours, not a sliding deadline", () => {
@@ -75,19 +92,24 @@ test("return URLs remain local and cannot redirect back to the gate", () => {
   assert.equal(pin.safePinReturnTo("/buildings/abc?month=2026-10"), "/buildings/abc?month=2026-10");
 });
 
-function actionFixture({ signedIn = false, allowed = true } = {}) {
+const realLimiter = load("src\\lib\\public-pin-attempts.ts", { "@/lib/db": fakeDb({}) });
+
+function actionFixture({ signedIn = false, lockedFor = 0 } = {}) {
   const writes = [];
-  let attempts = 0;
+  let failures = 0;
+  let checks = 0;
   const actions = load("src\\app\\(auth)\\pin\\actions.ts", {
     "next/headers": { cookies: async () => ({ set: (...args) => writes.push(args) }) },
     "next/navigation": { redirect: (url) => { throw new Error(`REDIRECT:${url}`); } },
     "@/auth": { auth: async () => signedIn ? { user: { id: "test-user" } } : null },
     "@/lib/public-pin": pin,
     "@/lib/public-pin-attempts": {
-      consumePublicPinAttempt: async () => { attempts++; return allowed; },
+      pinLockoutMessage: realLimiter.pinLockoutMessage,
+      publicPinRetryAfter: async () => { checks++; return lockedFor; },
+      recordFailedPublicPinAttempt: async () => { failures++; return lockedFor; },
     },
   });
-  return { actions, writes, attempts: () => attempts };
+  return { actions, writes, failures: () => failures, checks: () => checks };
 }
 
 test("correct entry sets a six-hour HttpOnly cookie and redirects to the original page", async () => {
@@ -97,7 +119,8 @@ test("correct entry sets a six-hour HttpOnly cookie and redirects to the origina
   form.set("pin", "0427");
   form.set("returnTo", "/buildings?month=2026-10");
   await assert.rejects(fixture.actions.unlockPublicPages({}, form), /REDIRECT:\/buildings\?month=2026-10/);
-  assert.equal(fixture.attempts(), 1);
+  assert.equal(fixture.failures(), 0, "correct entries never consume the failure budget");
+  assert.equal(fixture.checks(), 1);
   const [name, token, options] = fixture.writes[0];
   assert.equal(name, pin.PUBLIC_PIN_COOKIE);
   assert.equal(pin.hasValidPublicPin(token), true);
@@ -110,15 +133,21 @@ test("correct entry sets a six-hour HttpOnly cookie and redirects to the origina
   });
 });
 
-test("incorrect or rate-limited submissions never create access cookies", async () => {
+test("incorrect or locked-out submissions never create access cookies", async () => {
   configure();
-  for (const [value, allowed, message] of [["0000", true, /Incorrect PIN/], ["0427", false, /Too many PIN/]]) {
-    const fixture = actionFixture({ allowed });
+  for (const [value, lockedFor, message, failures] of [
+    ["0000", 0, /^Incorrect PIN\. Enter the access PIN\.$/, 1],
+    ["0000", 30_000, /^Too many PIN attempts\. Please try again in 1 minute\.$/, 1],
+    // A correct PIN during a lockout is refused too, so a hit cannot be confirmed.
+    ["0427", 125_000, /^Too many PIN attempts\. Please try again in 3 minutes\.$/, 0],
+  ]) {
+    const fixture = actionFixture({ lockedFor });
     const form = new FormData();
     form.set("pin", value);
     const result = await fixture.actions.unlockPublicPages({}, form);
     assert.match(result.error, message);
     assert.equal(fixture.writes.length, 0);
+    assert.equal(fixture.failures(), failures);
   }
 });
 
@@ -126,7 +155,7 @@ test("signed-in submission bypasses PIN and rate limiter", async () => {
   configure();
   const fixture = actionFixture({ signedIn: true });
   await assert.rejects(fixture.actions.unlockPublicPages({}, new FormData()), /REDIRECT:\//);
-  assert.equal(fixture.attempts(), 0);
+  assert.equal(fixture.failures() + fixture.checks(), 0);
   assert.equal(fixture.writes.length, 0);
 });
 
@@ -195,32 +224,57 @@ test("production PIN cookie is HTTPS-only", async () => {
   }
 });
 
-test("database-backed limiter atomically resets the window and caps all instances at 20 submissions", async () => {
-  let record;
+function limiterFixture(initial) {
+  const collection = fakeCollection(initial);
   const limiter = load("src\\lib\\public-pin-attempts.ts", {
-    "@/lib/db": {
-      connectDB: async () => ({
-        connection: { db: { collection: () => ({
-          findOneAndUpdate: async (filter, pipeline, options) => {
-            assert.deepEqual(filter, { _id: "shared" });
-            assert.deepEqual(options, { upsert: true, returnDocument: "after" });
-            const set = pipeline[0].$set;
-            const threshold = set.windowStart.$cond[0].$lte[1];
-            const expired = (record?.windowStart ?? 0) <= threshold;
-            record = {
-              windowStart: expired ? set.windowStart.$cond[1] : record.windowStart,
-              attempts: expired ? 1 : record.attempts + set.attempts.$cond[2].$add[1],
-            };
-            return record;
-          },
-        }) } },
-      }),
-    },
+    "@/lib/db": fakeDb({ public_pin_attempts: collection }),
   });
-  for (let i = 1; i <= 21; i++) {
-    assert.equal(await limiter.consumePublicPinAttempt(), i <= 20);
+  return { limiter, collection, doc: () => collection.docs.get("shared") };
+}
+
+test("shared limiter allows 10 failures per minute, then locks everyone out until the window ends", async () => {
+  const { limiter, collection, doc } = limiterFixture();
+  assert.equal(await limiter.publicPinRetryAfter(now), 0);
+  for (let i = 1; i <= 10; i++) {
+    assert.equal(await limiter.recordFailedPublicPinAttempt(now + i), 0, `failure ${i} is within budget`);
   }
-  record.windowStart = Date.now() - 60_001;
-  assert.equal(await limiter.consumePublicPinAttempt(), true);
-  assert.equal(record.attempts, 1);
+  assert.equal(await limiter.recordFailedPublicPinAttempt(now + 20_001), 40_000);
+  assert.equal(doc().failMinuteCount, 10, "failures during a lockout are not counted");
+  assert.equal(await limiter.publicPinRetryAfter(now + 20_001), 40_000);
+  assert.equal(await limiter.publicPinRetryAfter(now + 60_001), 0);
+  assert.equal(await limiter.recordFailedPublicPinAttempt(now + 60_001), 0);
+  assert.equal(doc().failMinuteCount, 1);
+  assert.equal(doc().failMinuteStart, now + 60_001);
+  assert.equal(doc().failHourCount, 11);
+  const updates = collection.calls.filter(([name]) => name === "findOneAndUpdate");
+  assert.equal(updates.length, 12);
+  for (const [, filter, options] of updates) {
+    assert.deepEqual(filter, { _id: "shared" });
+    assert.deepEqual(options, { upsert: true, returnDocument: "after" });
+  }
+});
+
+test("shared limiter caps failures at 100 per hour and reports the longer wait", async () => {
+  const { limiter, doc } = limiterFixture();
+  for (let minute = 0; minute < 10; minute++) {
+    for (let i = 0; i < 10; i++) {
+      assert.equal(await limiter.recordFailedPublicPinAttempt(now + minute * 60_000), 0);
+    }
+  }
+  const later = now + 10 * 60_000;
+  assert.equal(await limiter.recordFailedPublicPinAttempt(later), 50 * 60_000);
+  assert.equal(doc().failHourCount, 100);
+  assert.equal(await limiter.publicPinRetryAfter(later), 50 * 60_000);
+  assert.match(limiter.pinLockoutMessage(50 * 60_000), /try again in 50 minutes\.$/);
+  assert.equal(await limiter.publicPinRetryAfter(now + 60 * 60_000), 0);
+  assert.equal(await limiter.recordFailedPublicPinAttempt(now + 60 * 60_000), 0);
+});
+
+test("shared limiter coexists with the previous release's counter fields", async () => {
+  const { limiter, doc } = limiterFixture([{ _id: "shared", windowStart: now, attempts: 500 }]);
+  assert.equal(await limiter.publicPinRetryAfter(now), 0);
+  assert.equal(await limiter.recordFailedPublicPinAttempt(now), 0);
+  assert.equal(doc().windowStart, now);
+  assert.equal(doc().attempts, 500);
+  assert.equal(doc().failMinuteCount, 1);
 });
