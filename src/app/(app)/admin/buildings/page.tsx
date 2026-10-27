@@ -84,10 +84,16 @@ export default async function AdminBuildingsPage() {
                     · {units} unit{units === 1 ? "" : "s"}
                   </p>
 
-                  <div className="mt-4 flex gap-2">
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <Link
+                      href={`/admin/buildings/${id}/ledger`}
+                      className="inline-flex h-9 flex-1 items-center justify-center rounded-md bg-foreground px-3 text-sm font-medium text-background hover:opacity-90"
+                    >
+                      Cash book
+                    </Link>
                     <Link
                       href={`/admin/buildings/${id}`}
-                      className="inline-flex h-9 flex-1 items-center justify-center rounded-md bg-foreground text-sm font-medium text-background hover:opacity-90"
+                      className="inline-flex h-9 items-center justify-center rounded-md border border-black/15 px-3 text-sm font-medium hover:bg-black/4 dark:border-white/20 dark:hover:bg-white/10"
                     >
                       Manage
                     </Link>

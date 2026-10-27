@@ -45,9 +45,24 @@ export function monthRange(monthYear: string): { start: Date; end: Date } {
   return { start, end };
 }
 
-/** Current month as YYYY-MM (UTC). */
-export function currentMonthYear(): string {
-  return new Date().toISOString().slice(0, 7);
+/**
+ * The buildings' local time zone. "Which month is it now" follows local time,
+ * so a new month starts at local midnight rather than 06:00 (UTC midnight).
+ * Stored dates and month ranges stay in UTC.
+ */
+export const APP_TIME_ZONE = "Asia/Dhaka";
+
+/** Current month as YYYY-MM in the buildings' local time zone. */
+export function currentMonthYear(now: Date = new Date()): string {
+  // en-CA formats as YYYY-MM-DD.
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: APP_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  })
+    .format(now)
+    .slice(0, 7);
 }
 
 /** YYYY-MM-DD (UTC) of the first day of a month. */
@@ -95,6 +110,11 @@ export function resolveTransactionDate(
     return { ok: true, date: d };
   }
 
-  if (monthYear === currentMonthYear()) return { ok: true, date: new Date() };
+  if (monthYear === currentMonthYear()) {
+    // Early on the 1st (local) "now" is still the previous month in UTC; keep
+    // the stamp inside the month it is booked to.
+    const now = new Date();
+    return { ok: true, date: now < start ? start : now };
+  }
   return { ok: true, date: end };
 }

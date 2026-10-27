@@ -88,15 +88,7 @@ export default async function BuildingTenantsPage(props: {
   return (
     <div className="space-y-8">
       <div>
-        <Link
-          href={`/admin/buildings/${buildingId}`}
-          className="text-sm text-black/55 hover:text-foreground dark:text-white/55"
-        >
-          ← Back to building
-        </Link>
-        <h1 className="mt-3 text-2xl font-semibold">
-          Tenants · {building.name}
-        </h1>
+        <h1 className="text-2xl font-semibold">Tenants</h1>
         <p className="mt-1 text-sm text-black/55 dark:text-white/55">
           {occupiedCount} of {units.length} unit{units.length === 1 ? "" : "s"}{" "}
           occupied. Assigning a tenant to an occupied unit reassigns it and

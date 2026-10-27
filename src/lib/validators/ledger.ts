@@ -5,8 +5,19 @@ const monthYear = z
   .string()
   .regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Use a valid month (YYYY-MM).");
 
-const money = z.coerce.number().min(0).max(1_000_000_000);
-const positiveMoney = z.coerce.number().gt(0, "Amount must be greater than 0.");
+// Amounts are capped at a sane maximum and rounded to whole paisa (2 decimals).
+// `money` allows 0 (service charge / opening cash); `positiveMoney` does not.
+const money = z.coerce
+  .number()
+  .min(0)
+  .max(1_000_000_000)
+  .transform((v) => Math.round(v * 100) / 100);
+const positiveMoney = z.coerce
+  .number()
+  .gt(0, "Amount must be greater than 0.")
+  .max(1_000_000_000, "Amount is too large.")
+  .transform((v) => Math.round(v * 100) / 100)
+  .refine((v) => v > 0, "Amount must be at least 0.01.");
 
 export const openMonthSchema = z.object({
   buildingId: objectIdSchema,

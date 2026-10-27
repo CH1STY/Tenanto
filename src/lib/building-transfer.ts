@@ -300,6 +300,18 @@ export async function importBuilding(
         amount: num(c.amount),
         paidAmount: num(c.paidAmount),
         status: str(c.status, "DUE"),
+        // Due-edit history. `by` is an actor display name (a string, not an
+        // ObjectId), so it is copied as-is; no id remapping applies here.
+        // Older exports without this field yield [] via asArray.
+        adjustments: asArray(c.adjustments).map((a) => ({
+          monthYear: str(a.monthYear),
+          amount: num(a.amount),
+          description: str(a.description),
+          prevAmount: num(a.prevAmount),
+          prevDescription: str(a.prevDescription),
+          by: optStr(a.by),
+          at: date(a.at, new Date()),
+        })),
         carriedFrom: optStr(c.carriedFrom),
       })),
       { ordered: false },

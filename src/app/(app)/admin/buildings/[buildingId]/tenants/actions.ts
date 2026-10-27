@@ -32,6 +32,7 @@ import {
 } from "@/lib/validators/tenant";
 import { payChargeSchema } from "@/lib/validators/ledger";
 import { objectIdSchema } from "@/lib/validators/building";
+import { resolveTransactionDate } from "@/lib/dates";
 
 export type ActionState = { error: string | null; ok?: boolean };
 const OK: ActionState = { error: null, ok: true };
@@ -43,6 +44,115 @@ function isDuplicateKey(err: unknown): boolean {
     err !== null &&
     "code" in err &&
     (err as { code?: number }).code === 11000
+  );
+}
+
+/** A user-facing refusal thrown from inside a transaction to abort it. */
+class PlaceTenantRefusal extends Error {}
+
+/** Require the month to exist for the building and be OPEN. */
+async function openPeriodError(
+  buildingId: string,
+  monthYear: string,
+): Promise<string | null> {
+  const period = await MonthlyPeriod.findOne({ buildingId, monthYear })
+    .select("status")
+    .lean();
+  if (!period) {
+    return `Month ${monthYear} is not open. Open it in the cash book first.`;
+  }
+  if (period.status !== PERIOD_STATUS.OPEN) {
+    return `Month ${monthYear} is closed.`;
+  }
+  return null;
+}
+
+// Tolerance for float sums of money (amounts are rounded to 2 decimals).
+const MONEY_EPSILON = 1e-6;
+
+/** Pipeline stage: recompute a charge's status from paidAmount/amount. */
+const chargeStatusStage = {
+  $set: {
+    status: {
+      $cond: [
+        { $lte: ["$paidAmount", 0] },
+        CHARGE_STATUS.DUE,
+        {
+          $cond: [
+            { $gte: [{ $add: ["$paidAmount", MONEY_EPSILON] }, "$amount"] },
+            CHARGE_STATUS.PAID,
+            CHARGE_STATUS.PARTIAL,
+          ],
+        },
+      ],
+    },
+  },
+};
+
+/**
+ * Atomically add `amount` to a charge's paidAmount — only if it doesn't
+ * overpay — so two concurrent payments can never both pass the check.
+ */
+async function applyChargePayment(
+  buildingId: string,
+  chargeId: string,
+  amount: number,
+) {
+  const updated = await Charge.findOneAndUpdate(
+    {
+      _id: chargeId,
+      buildingId,
+      $expr: {
+        $lte: [
+          { $add: [{ $ifNull: ["$paidAmount", 0] }, amount] },
+          { $add: ["$amount", MONEY_EPSILON] },
+        ],
+      },
+    },
+    [
+      {
+        $set: {
+          paidAmount: { $add: [{ $ifNull: ["$paidAmount", 0] }, amount] },
+        },
+      },
+      chargeStatusStage,
+    ],
+    { returnDocument: "after", updatePipeline: true },
+  );
+  if (updated) return { charge: updated, error: null };
+
+  const current = await Charge.findOne({ _id: chargeId, buildingId })
+    .select("amount paidAmount")
+    .lean();
+  if (!current) return { charge: null, error: "Charge not found." };
+  // Round away float noise (e.g. 0.005000000000009663) before showing it.
+  const remaining =
+    Math.round(Math.max(0, current.amount - (current.paidAmount ?? 0)) * 100) /
+    100;
+  return {
+    charge: null,
+    error: `Amount exceeds the outstanding ${remaining.toLocaleString()} on this charge.`,
+  };
+}
+
+/** Undo applyChargePayment (used when the matching Payment can't be saved). */
+async function undoChargePayment(chargeId: unknown, amount: number) {
+  await Charge.updateOne(
+    { _id: chargeId },
+    [
+      {
+        $set: {
+          paidAmount: {
+            $max: [
+              0,
+              { $subtract: [{ $ifNull: ["$paidAmount", 0] }, amount] },
+            ],
+          },
+        },
+      },
+      chargeStatusStage,
+    ],
+    { updatePipeline: true },
   );
 }
 
@@ -89,6 +199,8 @@ export async function placeTenant(
     .lean();
   if (!unit) return fail("Unit not found in this building.");
 
+  const isSuperAdmin = actor.role === ROLES.SUPER_ADMIN;
+
   let existingTenant = null;
   if (existingUserId) {
     existingTenant = await User.findOne({
@@ -98,6 +210,26 @@ export async function placeTenant(
       .select("name")
       .lean();
     if (!existingTenant) return fail("Selected tenant not found.");
+
+    if (!isSuperAdmin) {
+      // Managers may only reuse tenants with history in this building, and may
+      // never end an occupancy in a building they don't manage.
+      const hasHistoryHere = await Tenancy.exists({
+        userId: existingUserId,
+        buildingId,
+      });
+      if (!hasHistoryHere) return fail("Selected tenant not found.");
+      const housedElsewhere = await Tenancy.exists({
+        userId: existingUserId,
+        isActive: true,
+        buildingId: { $ne: buildingId },
+      });
+      if (housedElsewhere) {
+        return fail(
+          "This tenant is currently housed in another building. Ask a Super Admin to move them.",
+        );
+      }
+    }
   }
 
   const session = await mongoose.startSession();
@@ -108,16 +240,34 @@ export async function placeTenant(
 
   try {
     await session.withTransaction(async () => {
+      // The callback may be retried after a transient error: reset outputs.
+      replacedUserName = null;
+
+      // Lock the unit: touching its document makes concurrent placements on
+      // the same unit write-conflict, so the driver aborts and retries the
+      // loser, which then sees the winner's tenancy below and reassigns
+      // cleanly instead of inserting a second active tenancy.
+      const locked = await Unit.updateOne(
+        { _id: unitId, buildingId },
+        { $set: { updatedAt: new Date() } },
+        { session, timestamps: false },
+      );
+      if (locked.matchedCount === 0) {
+        throw new PlaceTenantRefusal("Unit not found in this building.");
+      }
+
       // Close whatever tenancy currently holds the target unit (reassignment).
-      const occupant = await Tenancy.findOne({
+      // Read inside the transaction, after the lock, so it is current.
+      // (Ends every active one, in case legacy data already holds duplicates.)
+      const occupants = await Tenancy.find({
         unitId,
         isActive: true,
       }).session(session);
-      if (occupant) {
+      for (const occupant of occupants) {
         const prevUser = await User.findById(occupant.userId)
           .select("name")
           .session(session);
-        replacedUserName = prevUser?.name ?? null;
+        replacedUserName = prevUser?.name ?? replacedUserName;
         occupant.endDate = new Date();
         occupant.isActive = false;
         await occupant.save({ session });
@@ -132,6 +282,15 @@ export async function placeTenant(
           isActive: true,
         }).session(session);
         if (currentlyElsewhere) {
+          if (
+            !isSuperAdmin &&
+            String(currentlyElsewhere.buildingId) !== buildingId
+          ) {
+            // Re-checked inside the transaction in case they moved meanwhile.
+            throw new PlaceTenantRefusal(
+              "This tenant is currently housed in another building. Ask a Super Admin to move them.",
+            );
+          }
           currentlyElsewhere.endDate = new Date();
           currentlyElsewhere.isActive = false;
           await currentlyElsewhere.save({ session });
@@ -174,6 +333,7 @@ export async function placeTenant(
       newTenancyId = String(tenancy._id);
     });
   } catch (err) {
+    if (err instanceof PlaceTenantRefusal) return fail(err.message);
     if (isDuplicateKey(err)) {
       return fail(`A tenant with NID "${nid}" already exists.`);
     }
@@ -373,6 +533,10 @@ export async function addManualCharge(
   if (!(await userManagesBuilding(buildingId)))
     return fail("You do not manage this building.");
 
+  // Dues may only be added to a month that is open in the cash book.
+  const periodError = await openPeriodError(buildingId, monthYear);
+  if (periodError) return fail(periodError);
+
   const tenant = await User.findOne({ _id: userId, role: ROLES.TENANT })
     .select("name")
     .lean();
@@ -441,45 +605,45 @@ export async function payTenantCharge(
   }
   const { buildingId, monthYear, chargeId, amount } = parsed.data;
 
+  // The payment is booked to `monthYear` (the open month), so date it within
+  // that month exactly like the cash book's recordPayment does.
+  const txnDate = resolveTransactionDate(
+    monthYear,
+    formData.get("date") as string | null,
+  );
+  if (!txnDate.ok) return fail(txnDate.error);
+
   await connectDB();
 
   if (!(await userManagesBuilding(buildingId)))
     return fail("You do not manage this building.");
 
-  const period = await MonthlyPeriod.findOne({ buildingId, monthYear });
-  if (!period) {
-    return fail(
-      `Month ${monthYear} is not open. Open it in the cash book first.`,
-    );
+  const periodError = await openPeriodError(buildingId, monthYear);
+  if (periodError) return fail(periodError);
+
+  const applied = await applyChargePayment(buildingId, chargeId, amount);
+  if (!applied.charge) return fail(applied.error);
+  const charge = applied.charge;
+
+  let payment;
+  try {
+    payment = await Payment.create({
+      buildingId,
+      tenancyId: charge.tenancyId,
+      userId: charge.userId,
+      monthYear,
+      totalAmount: amount,
+      allocations: [
+        { chargeId: charge._id, category: charge.category, amount },
+      ],
+      receivedAt: txnDate.date,
+      recordedBy: actor.id,
+    });
+  } catch (err) {
+    // Keep the charge consistent with the payments that actually exist.
+    await undoChargePayment(charge._id, amount);
+    throw err;
   }
-  if (period.status !== PERIOD_STATUS.OPEN) {
-    return fail(`Month ${monthYear} is closed.`);
-  }
-
-  const charge = await Charge.findOne({ _id: chargeId, buildingId });
-  if (!charge) return fail("Charge not found.");
-
-  const remaining = charge.amount - charge.paidAmount;
-  if (amount > remaining) {
-    return fail(`Amount exceeds the outstanding ${remaining} on this charge.`);
-  }
-
-  charge.paidAmount += amount;
-  charge.status =
-    charge.paidAmount >= charge.amount
-      ? CHARGE_STATUS.PAID
-      : CHARGE_STATUS.PARTIAL;
-  await charge.save();
-
-  const payment = await Payment.create({
-    buildingId,
-    tenancyId: charge.tenancyId,
-    userId: charge.userId,
-    monthYear,
-    totalAmount: amount,
-    allocations: [{ chargeId: charge._id, category: charge.category, amount }],
-    recordedBy: actor.id,
-  });
 
   await logAudit({
     action: AUDIT_ACTIONS.CREATE,
@@ -514,6 +678,8 @@ export async function deleteCharge(formData: FormData) {
   // Only manual dues with no payments can be removed.
   if (charge.category === CHARGE_CATEGORY.SERVICE_CHARGE) return;
   if (charge.paidAmount > 0) return;
+  // Only dues in an OPEN month can be removed, so closed months stay intact.
+  if (await openPeriodError(buildingId, charge.monthYear)) return;
 
   const userId = String(charge.userId);
   const label = charge.description;

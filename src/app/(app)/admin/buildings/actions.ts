@@ -391,16 +391,33 @@ export async function updateUnit(
   return OK;
 }
 
-export async function deleteUnit(formData: FormData) {
-  const admin = await requireSuperAdmin();
+export async function deleteUnit(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  // Rendered through ConfirmActionForm, which shows {error}: don't throw.
+  let admin;
+  try {
+    admin = await requireSuperAdmin();
+  } catch {
+    return { error: "Only a Super Admin can delete units." };
+  }
 
   const parsed = objectIdSchema.safeParse(formData.get("unitId"));
-  if (!parsed.success) return;
+  if (!parsed.success) return { error: "Invalid unit." };
   const unitId = parsed.data;
 
   await connectDB();
   const before = await Unit.findById(unitId).lean();
-  if (!before) return;
+  if (!before) return { error: "This unit no longer exists." };
+
+  // A unit with any tenancy (current or past) can't be deleted: its history,
+  // charges and payments would lose their unit.
+  if (await Tenancy.exists({ unitId })) {
+    return {
+      error: `Unit "${before.label}" has tenant history, so it can't be deleted. Unassign or edit it instead.`,
+    };
+  }
 
   await Unit.deleteOne({ _id: unitId });
 
@@ -420,6 +437,7 @@ export async function deleteUnit(formData: FormData) {
   });
 
   revalidatePath(`/admin/buildings/${before.buildingId}`);
+  return { error: null, ok: true };
 }
 
 function isDuplicateKey(err: unknown): boolean {

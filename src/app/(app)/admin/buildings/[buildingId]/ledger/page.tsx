@@ -33,6 +33,7 @@ import { monthLabel, currentMonthYear, cashbookFileName } from "@/lib/dates";
 import { compareUnitLabels } from "@/lib/units";
 import { objectIdSchema } from "@/lib/validators/building";
 import { ConfirmSubmit } from "@/components/confirm-submit";
+import { ConfirmActionForm } from "@/components/confirm-action-form";
 import { loadMonthMedia } from "@/app/buildings/[buildingId]/media-actions";
 import { MonthAttachments } from "./media";
 import {
@@ -97,7 +98,7 @@ export default async function LedgerPage(props: {
   const hasOpenMonth = openPeriod !== null;
   const canManageMonths = user.role === ROLES.SUPER_ADMIN;
 
-  const thisMonth = new Date().toISOString().slice(0, 7);
+  const thisMonth = currentMonthYear();
   const defaultNewMonth = periods[0]
     ? nextMonth(periods[0].monthYear)
     : thisMonth;
@@ -115,17 +116,7 @@ export default async function LedgerPage(props: {
   return (
     <>
       <div className="space-y-8 no-print">
-        <div>
-          <Link
-            href={`/admin/buildings/${buildingId}`}
-            className="text-sm text-black/55 hover:text-foreground dark:text-white/55"
-          >
-            ← Back to building
-          </Link>
-          <h1 className="mt-3 text-2xl font-semibold">
-            Cash book · {building.name}
-          </h1>
-        </div>
+        <h1 className="text-2xl font-semibold">Cash book</h1>
 
         {/* Month selector */}
         {periods.length > 0 ? (
@@ -563,7 +554,9 @@ async function CashBook({
                 </ConfirmSubmit>
               </form>
             ) : null}
-            <DeleteMonthButton buildingId={buildingId} monthYear={monthYear} />
+            {canManageMonths ? (
+              <DeleteMonthButton buildingId={buildingId} monthYear={monthYear} />
+            ) : null}
           </div>
         ) : (
           <div className="flex items-center gap-2">
@@ -580,7 +573,9 @@ async function CashBook({
                 </ConfirmSubmit>
               </form>
             ) : null}
-            <DeleteMonthButton buildingId={buildingId} monthYear={monthYear} />
+            {canManageMonths ? (
+              <DeleteMonthButton buildingId={buildingId} monthYear={monthYear} />
+            ) : null}
           </div>
         )}
       </div>
@@ -1067,18 +1062,17 @@ function DeleteMonthButton({
   monthYear: string;
 }) {
   return (
-    <form action={deleteMonth} className="no-print">
-      <input type="hidden" name="buildingId" value={buildingId} />
-      <input type="hidden" name="monthYear" value={monthYear} />
-      <ConfirmSubmit
-        message={`Delete ${monthLabel(
-          monthYear,
-        )} entirely? This permanently removes all its payments, income, expenses, withdrawals and charges, and recalculates every later month. This cannot be undone.`}
-        className="inline-flex h-9 items-center justify-center rounded-md border border-red-500/40 px-4 text-sm font-medium text-red-600 hover:bg-red-500/10 dark:text-red-400"
-      >
-        Delete month
-      </ConfirmSubmit>
-    </form>
+    <ConfirmActionForm
+      action={deleteMonth}
+      fields={{ buildingId, monthYear }}
+      className="no-print"
+      message={`Delete ${monthLabel(
+        monthYear,
+      )} entirely? This permanently removes all its payments, income, expenses, withdrawals and charges. This cannot be undone.`}
+      label="Delete month"
+      pendingLabel="Deleting…"
+      buttonClassName="inline-flex h-9 items-center justify-center rounded-md border border-red-500/40 px-4 text-sm font-medium text-red-600 hover:bg-red-500/10 dark:text-red-400"
+    />
   );
 }
 

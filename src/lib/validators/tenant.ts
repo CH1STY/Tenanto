@@ -5,7 +5,13 @@ const monthYear = z
   .string()
   .regex(/^\d{4}-(0[1-9]|1[0-2])$/, "Use a valid month (YYYY-MM).");
 
-const positiveMoney = z.coerce.number().gt(0, "Amount must be greater than 0.");
+// Amounts are capped at a sane maximum and rounded to whole paisa (2 decimals).
+const positiveMoney = z.coerce
+  .number()
+  .gt(0, "Amount must be greater than 0.")
+  .max(1_000_000_000, "Amount is too large.")
+  .transform((v) => Math.round(v * 100) / 100)
+  .refine((v) => v > 0, "Amount must be at least 0.01.");
 
 // Assign a tenant to a unit — either an existing tenant (existingUserId) or a
 // brand-new one (name + nid required). superRefine enforces the right fields.
