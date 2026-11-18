@@ -38,3 +38,8 @@ export const unitUpdateSchema = z.object({
   label: z.string().trim().min(1, "Label is required.").max(30),
   serviceChargeAmount: z.coerce.number().min(0).max(100_000_000).default(0),
 });
+
+export const bulkServiceChargeSchema = z.object({
+  buildingId: objectIdSchema,
+  serviceChargeAmount: z.coerce.number().min(0).max(100_000_000),
+});

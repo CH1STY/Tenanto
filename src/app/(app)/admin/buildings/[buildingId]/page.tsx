@@ -6,7 +6,13 @@ import { Building } from "@/models/Building";
 import { Unit } from "@/models/Unit";
 import { objectIdSchema } from "@/lib/validators/building";
 import { ConfirmActionForm } from "@/components/confirm-action-form";
-import { BuildingEditForm, UnitCreateForm, UnitEditRow } from "../forms";
+import { Tenancy } from "@/models/Tenancy";
+import {
+  ApplyServiceChargeForm,
+  BuildingEditForm,
+  UnitCreateForm,
+  UnitEditRow,
+} from "../forms";
 import { deleteUnit } from "../actions";
 
 export default async function ManageBuildingPage(props: {
@@ -25,11 +31,14 @@ export default async function ManageBuildingPage(props: {
   }
 
   await connectDB();
-  const [building, units] = await Promise.all([
+  const [building, units, activeTenancies] = await Promise.all([
     Building.findById(buildingId).lean(),
     Unit.find({ buildingId }).sort({ floorNumber: 1, label: 1 }).lean(),
+    Tenancy.find({ buildingId, isActive: true }).select("unitId").lean(),
   ]);
   if (!building) notFound();
+  const activeUnitCount = new Set(activeTenancies.map((t) => String(t.unitId)))
+    .size;
 
   const floors = new Map<number, typeof units>();
   for (const u of units) {
@@ -62,6 +71,11 @@ export default async function ManageBuildingPage(props: {
 
         <UnitCreateForm buildingId={String(building._id)} />
 
+        <ApplyServiceChargeForm
+          buildingId={String(building._id)}
+          activeTenantCount={activeUnitCount}
+        />
+
         {units.length === 0 ? (
           <div className="rounded-lg border border-dashed border-black/15 p-10 text-center text-black/55 dark:border-white/20 dark:text-white/55">
             No units yet. Add one above.
@@ -76,7 +90,7 @@ export default async function ManageBuildingPage(props: {
                 <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
                   {floors.get(floor)!.map((u) => (
                     <div
-                      key={String(u._id)}
+                      key={`${String(u._id)}-${u.serviceChargeAmount ?? 0}`}
                       className="flex items-start gap-2"
                     >
                       <div className="flex-1">
