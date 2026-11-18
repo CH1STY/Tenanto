@@ -23,6 +23,7 @@ import {
   buildingUpdateSchema,
   unitCreateSchema,
   unitUpdateSchema,
+  bulkServiceChargeSchema,
   objectIdSchema,
 } from "@/lib/validators/building";
 
@@ -388,6 +389,62 @@ export async function updateUnit(
   }
 
   revalidatePath(`/admin/buildings/${before.buildingId}`);
+  return OK;
+}
+
+/**
+ * Sets the service charge on every unit that has an active tenant in the
+ * building, in one write. Vacant units are left untouched.
+ */
+export async function applyServiceChargeToActiveTenants(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  let admin;
+  try {
+    admin = await requireSuperAdmin();
+  } catch {
+    return fail("Not authorized.");
+  }
+
+  const parsed = bulkServiceChargeSchema.safeParse({
+    buildingId: formData.get("buildingId"),
+    serviceChargeAmount: formData.get("serviceChargeAmount"),
+  });
+  if (!parsed.success) {
+    return fail(parsed.error.issues[0]?.message ?? "Invalid input.");
+  }
+  const { buildingId, serviceChargeAmount } = parsed.data;
+
+  await connectDB();
+  const building = await Building.findById(buildingId).select("name").lean();
+  if (!building) return fail("Building not found.");
+
+  const activeTenancies = await Tenancy.find({ buildingId, isActive: true })
+    .select("unitId")
+    .lean();
+  const unitIds = [...new Set(activeTenancies.map((t) => String(t.unitId)))];
+  if (unitIds.length === 0) {
+    return fail("There are no active tenants in this building.");
+  }
+
+  await Unit.updateMany(
+    { _id: { $in: unitIds }, buildingId },
+    { $set: { serviceChargeAmount } },
+  );
+
+  await logAudit({
+    action: AUDIT_ACTIONS.UPDATE,
+    entity: "Unit",
+    entityId: buildingId,
+    entityLabel: building.name,
+    buildingId,
+    actor: { id: admin.id, name: admin.name, role: admin.role },
+    description: `Set service charge to ${serviceChargeAmount} for ${unitIds.length} unit(s) with active tenants.`,
+    after: { serviceChargeAmount, unitsUpdated: unitIds.length },
+  });
+
+  revalidatePath(`/admin/buildings/${buildingId}`);
   return OK;
 }
 

@@ -6,6 +6,7 @@ import {
   updateBuilding,
   createUnit,
   updateUnit,
+  applyServiceChargeToActiveTenants,
   importBuildingFromFile,
   type ActionState,
 } from "./actions";
@@ -249,6 +250,73 @@ export function UnitCreateForm({ buildingId }: { buildingId: string }) {
         {pending ? "Adding…" : "Add unit"}
       </button>
       <div className="w-full">
+        <Message state={state} />
+      </div>
+    </form>
+  );
+}
+
+export function ApplyServiceChargeForm({
+  buildingId,
+  activeTenantCount,
+}: {
+  buildingId: string;
+  activeTenantCount: number;
+}) {
+  const [state, action, pending] = useActionState(
+    applyServiceChargeToActiveTenants,
+    initial,
+  );
+
+  return (
+    <form
+      action={action}
+      onSubmit={(e) => {
+        const amount = (
+          e.currentTarget.elements.namedItem(
+            "serviceChargeAmount",
+          ) as HTMLInputElement | null
+        )?.value;
+        if (
+          !window.confirm(
+            `Set the service charge to ${amount} for ${activeTenantCount} unit(s) with active tenants?`,
+          )
+        ) {
+          e.preventDefault();
+        }
+      }}
+      className="flex flex-wrap items-end gap-3 rounded-lg border border-black/10 p-4 dark:border-white/15"
+    >
+      <input type="hidden" name="buildingId" value={buildingId} />
+      <div className="w-40">
+        <label className={labelCls} htmlFor="bulkServiceCharge">
+          Service charge for all active tenants
+        </label>
+        <input
+          id="bulkServiceCharge"
+          name="serviceChargeAmount"
+          type="number"
+          min={0}
+          required
+          placeholder="Amount"
+          className={inputCls}
+        />
+      </div>
+      <button
+        type="submit"
+        disabled={pending || activeTenantCount === 0}
+        className={primaryBtn}
+      >
+        {pending
+          ? "Applying…"
+          : `Apply to all active tenants (${activeTenantCount})`}
+      </button>
+      <div className="w-full">
+        {activeTenantCount === 0 ? (
+          <p className="text-xs text-black/55 dark:text-white/55">
+            No active tenants in this building yet.
+          </p>
+        ) : null}
         <Message state={state} />
       </div>
     </form>
